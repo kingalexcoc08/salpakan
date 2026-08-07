@@ -16,14 +16,17 @@
     "@salpakan/shared": "0.1.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "multer": "^2.0.0"
+    "multer": "^2.0.0",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/multer": "^1.4.11",
     "@types/node": "^22.5.0",
+    "@types/pg": "^8.11.10",
     "@types/supertest": "^6.0.2",
+    "pg-mem": "^3.0.4",
     "supertest": "^7.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",

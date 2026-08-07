@@ -5,13 +5,13 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { config } from "../src/config.js";
-import { openDb } from "../src/db.js";
+import { createTestDb } from "./testDb.js";
 import { fixturePhoto, ScriptedVisionService } from "./testVisionService.js";
 
 let app: Express;
 
-beforeEach(() => {
-  const db = openDb(":memory:");
+beforeEach(async () => {
+  const db = await createTestDb();
   app = createApp(db, new ScriptedVisionService());
 });
 

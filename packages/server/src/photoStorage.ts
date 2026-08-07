@@ -24,6 +24,15 @@ export function extensionForMimeType(mimeType: string): string {
  * Persists an uploaded piece photo to disk (kept for the duration of the
  * session so a disputed result can be manually re-verified, per §5.3) and
  * returns its SHA-256 hash for the match record.
+ *
+ * KNOWN GAP: this is local disk, which does not persist across invocations
+ * on a serverless host (e.g. Vercel Functions) — a photo saved by one
+ * invocation may simply not exist when a later invocation tries to purge
+ * it. The hash + rank (the parts that matter for arbitration and the hash
+ * chain) are unaffected either way since those are already in Postgres, but
+ * the "keep raw photos for manual re-verification during the game" promise
+ * from spec §5.3 silently doesn't hold on serverless until this moves to
+ * object storage (e.g. a Supabase Storage bucket). Not yet done.
  */
 export async function savePhoto(
   sessionId: string,

@@ -1,9 +1,16 @@
 import { createApp } from "./app.js";
 import { config } from "./config.js";
-import { openDb } from "./db.js";
+import { ensureSchema, openDb } from "./db.js";
 import { createVisionService } from "./services/visionService.js";
 
-const db = openDb(config.dbPath);
+if (!config.databaseUrl) {
+  console.error("DATABASE_URL is required — a Postgres connection string (e.g. Supabase's Transaction pooler URI). See README.");
+  process.exit(1);
+}
+
+const db = openDb(config.databaseUrl);
+await ensureSchema(db);
+
 const visionService = createVisionService();
 const app = createApp(db, visionService);
 

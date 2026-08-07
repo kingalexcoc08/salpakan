@@ -10,7 +10,7 @@ import {
   type PlayerColor,
   Rank,
 } from "@salpakan/shared";
-import type { DatabaseSync } from "node:sqlite";
+import type { Queryable } from "../db.js";
 import { generateChallengeId } from "../ids.js";
 import type { ChallengeRow } from "../types.js";
 
@@ -38,58 +38,63 @@ export class ChallengeNotFoundError extends Error {}
 export class ChallengeAlreadyResolvedError extends Error {}
 
 export class MatchStore {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: Queryable) {}
 
-  createChallenge(sessionId: string, initiator: PlayerColor): ChallengeRow {
-    const existingOpen = this.db
-      .prepare("SELECT id FROM challenges WHERE session_id = ? AND status = 'OPEN'")
-      .get(sessionId);
-    if (existingOpen) {
+  async createChallenge(sessionId: string, initiator: PlayerColor): Promise<ChallengeRow> {
+    const existingOpen = await this.db.query("SELECT id FROM challenges WHERE session_id = $1 AND status = 'OPEN'", [
+      sessionId,
+    ]);
+    if (existingOpen.rows.length > 0) {
       throw new ChallengeAlreadyOpenError("A challenge is already open for this session.");
     }
 
-    const countRow = this.db.prepare("SELECT COUNT(*) as c FROM challenges WHERE session_id = ?").get(sessionId) as {
-      c: number;
-    };
-    const challengeNumber = countRow.c + 1;
+    const countResult = await this.db.query<{ c: number }>(
+      "SELECT COUNT(*)::int AS c FROM challenges WHERE session_id = $1",
+      [sessionId],
+    );
+    const challengeNumber = Number(countResult.rows[0]?.c ?? 0) + 1;
     const id = generateChallengeId();
     const now = new Date().toISOString();
 
-    this.db
-      .prepare(
-        `INSERT INTO challenges (id, session_id, challenge_number, initiator, status, created_at)
-         VALUES (?, ?, ?, ?, 'OPEN', ?)`,
-      )
-      .run(id, sessionId, challengeNumber, initiator, now);
+    await this.db.query(
+      `INSERT INTO challenges (id, session_id, challenge_number, initiator, status, created_at)
+       VALUES ($1, $2, $3, $4, 'OPEN', $5)`,
+      [id, sessionId, challengeNumber, initiator, now],
+    );
 
-    return this.getChallenge(sessionId, id)!;
+    return (await this.getChallenge(sessionId, id))!;
   }
 
-  getChallenge(sessionId: string, challengeId: string): ChallengeRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM challenges WHERE session_id = ? AND id = ?")
-      .get(sessionId, challengeId) as ChallengeRow | undefined;
+  async getChallenge(sessionId: string, challengeId: string): Promise<ChallengeRow | undefined> {
+    const result = await this.db.query<ChallengeRow>("SELECT * FROM challenges WHERE session_id = $1 AND id = $2", [
+      sessionId,
+      challengeId,
+    ]);
+    return result.rows[0];
   }
 
-  getOpenChallenge(sessionId: string): ChallengeRow | undefined {
-    return this.db
-      .prepare("SELECT * FROM challenges WHERE session_id = ? AND status = 'OPEN' LIMIT 1")
-      .get(sessionId) as ChallengeRow | undefined;
+  async getOpenChallenge(sessionId: string): Promise<ChallengeRow | undefined> {
+    const result = await this.db.query<ChallengeRow>(
+      "SELECT * FROM challenges WHERE session_id = $1 AND status = 'OPEN' LIMIT 1",
+      [sessionId],
+    );
+    return result.rows[0];
   }
 
-  listChallenges(sessionId: string): ChallengeRow[] {
-    return this.db
-      .prepare("SELECT * FROM challenges WHERE session_id = ? ORDER BY challenge_number ASC")
-      .all(sessionId) as unknown as ChallengeRow[];
+  async listChallenges(sessionId: string): Promise<ChallengeRow[]> {
+    const result = await this.db.query<ChallengeRow>(
+      "SELECT * FROM challenges WHERE session_id = $1 ORDER BY challenge_number ASC",
+      [sessionId],
+    );
+    return result.rows;
   }
 
-  private getLastRecordHash(sessionId: string): string {
-    const row = this.db
-      .prepare(
-        "SELECT record_hash FROM challenges WHERE session_id = ? AND status = 'RESOLVED' ORDER BY challenge_number DESC LIMIT 1",
-      )
-      .get(sessionId) as { record_hash: string } | undefined;
-    return row?.record_hash ?? GENESIS_HASH;
+  private async getLastRecordHash(sessionId: string): Promise<string> {
+    const result = await this.db.query<{ record_hash: string }>(
+      "SELECT record_hash FROM challenges WHERE session_id = $1 AND status = 'RESOLVED' ORDER BY challenge_number DESC LIMIT 1",
+      [sessionId],
+    );
+    return result.rows[0]?.record_hash ?? GENESIS_HASH;
   }
 
   /**
@@ -98,8 +103,14 @@ export class MatchStore {
    * `resolveChallenge` function and appends a hash-chained record (spec
    * §5.2/§5.3). Returns the updated row either way.
    */
-  async submitPiece(sessionId: string, challengeId: string, color: PlayerColor, submission: PieceSubmission, flagVsFlagRule: FlagVsFlagRule): Promise<ChallengeRow> {
-    const challenge = this.getChallenge(sessionId, challengeId);
+  async submitPiece(
+    sessionId: string,
+    challengeId: string,
+    color: PlayerColor,
+    submission: PieceSubmission,
+    flagVsFlagRule: FlagVsFlagRule,
+  ): Promise<ChallengeRow> {
+    const challenge = await this.getChallenge(sessionId, challengeId);
     if (!challenge) {
       throw new ChallengeNotFoundError("No such challenge.");
     }
@@ -112,11 +123,12 @@ export class MatchStore {
     const confCol = color === "BLUE" ? "blue_confidence" : "red_confidence";
     const pathCol = color === "BLUE" ? "blue_photo_path" : "red_photo_path";
 
-    this.db
-      .prepare(`UPDATE challenges SET ${hashCol} = ?, ${rankCol} = ?, ${confCol} = ?, ${pathCol} = ? WHERE id = ?`)
-      .run(submission.photoHash, submission.rank, submission.confidence, submission.photoPath, challengeId);
+    await this.db.query(
+      `UPDATE challenges SET ${hashCol} = $1, ${rankCol} = $2, ${confCol} = $3, ${pathCol} = $4 WHERE id = $5`,
+      [submission.photoHash, submission.rank, submission.confidence, submission.photoPath, challengeId],
+    );
 
-    let updated = this.getChallenge(sessionId, challengeId)!;
+    let updated = (await this.getChallenge(sessionId, challengeId))!;
 
     if (updated.blue_rank && updated.red_rank) {
       const outcome = resolveChallenge(updated.blue_rank as Rank, updated.red_rank as Rank, colorToSide(updated.initiator), {
@@ -133,7 +145,7 @@ export class MatchStore {
       const resultLoser = colorResult.type === "win" ? colorResult.loser : null;
       const resultReason = colorResult.reason;
 
-      const previousHash = this.getLastRecordHash(sessionId);
+      const previousHash = await this.getLastRecordHash(sessionId);
       const content: MatchRecordContent = {
         sessionId,
         challengeNumber: updated.challenge_number,
@@ -154,17 +166,16 @@ export class MatchStore {
       };
       const recordHash = await computeRecordHash(content);
 
-      this.db
-        .prepare(
-          `UPDATE challenges SET
-             status = 'RESOLVED',
-             result_type = ?, result_winner = ?, result_loser = ?, result_reason = ?,
-             previous_hash = ?, record_hash = ?, resolved_at = ?
-           WHERE id = ?`,
-        )
-        .run(resultType, resultWinner, resultLoser, resultReason, previousHash, recordHash, content.timestamp, challengeId);
+      await this.db.query(
+        `UPDATE challenges SET
+           status = 'RESOLVED',
+           result_type = $1, result_winner = $2, result_loser = $3, result_reason = $4,
+           previous_hash = $5, record_hash = $6, resolved_at = $7
+         WHERE id = $8`,
+        [resultType, resultWinner, resultLoser, resultReason, previousHash, recordHash, content.timestamp, challengeId],
+      );
 
-      updated = this.getChallenge(sessionId, challengeId)!;
+      updated = (await this.getChallenge(sessionId, challengeId))!;
     }
 
     return updated;
@@ -207,15 +218,14 @@ export class MatchStore {
   }
 
   /** Clears the on-disk photo path columns after files are purged (spec §5.3 retention policy). */
-  clearPhotoPaths(sessionId: string): void {
-    this.db
-      .prepare("UPDATE challenges SET blue_photo_path = NULL, red_photo_path = NULL WHERE session_id = ?")
-      .run(sessionId);
+  async clearPhotoPaths(sessionId: string): Promise<void> {
+    await this.db.query("UPDATE challenges SET blue_photo_path = NULL, red_photo_path = NULL WHERE session_id = $1", [
+      sessionId,
+    ]);
   }
 
-  getResolvedRecords(sessionId: string): MatchRecord[] {
-    return this.listChallenges(sessionId)
-      .map((row) => this.toMatchRecord(row))
-      .filter((r): r is MatchRecord => r !== null);
+  async getResolvedRecords(sessionId: string): Promise<MatchRecord[]> {
+    const rows = await this.listChallenges(sessionId);
+    return rows.map((row) => this.toMatchRecord(row)).filter((r): r is MatchRecord => r !== null);
   }
 }

@@ -16,16 +16,19 @@ packages/
   shared/   Pure, side-agnostic arbitration logic + hash-chain match-log utilities.
             No knowledge of HTTP, storage, or images. Fully unit tested (Vitest).
   server/   Express + TypeScript API: sessions, photo upload, Claude vision
-            recognition, hash-chained match log (SQLite via node:sqlite),
-            post-game history. Integration-tested with Supertest.
+            recognition, hash-chained match log (Postgres via `pg`, hosted on
+            Supabase), post-game history. Integration-tested with Supertest
+            against an in-memory Postgres-compatible engine (pg-mem).
   web/      React + Vite PWA: create/join a session, two-phone and one-phone
             capture flows, side-only result screens, post-game history.
 ```
 
 ## Requirements
 
-- Node.js **>= 22.5.0** (uses the built-in `node:sqlite` module — no native
-  dependencies to compile, so it runs anywhere Node runs).
+- Node.js **>= 20**.
+- A Postgres database — this project targets [Supabase](https://supabase.com)
+  (a `sessions` + `challenges` schema needs to exist; see "Database" below).
+  `DATABASE_URL` is required to run the server outside of tests.
 - An `ANTHROPIC_API_KEY` for real rank recognition (optional for local dev/demo —
   see "Vision recognition" below).
 
@@ -35,7 +38,8 @@ packages/
 npm install
 
 # Terminal 1 — API server (defaults to :4000)
-npm run dev:server
+DATABASE_URL="postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres" \
+  npm run dev:server
 
 # Terminal 2 — web app (defaults to :5173, proxies /api to :4000 in dev)
 npm run dev:web
@@ -58,6 +62,44 @@ npm run test:server
 ```bash
 npm run build
 ```
+
+## Database (Supabase / Postgres)
+
+The server persists sessions and the hash-chained match log in Postgres via
+the `pg` driver (`packages/server/src/db.ts`), not a local file — a
+serverless host (e.g. Vercel Functions, the eventual target for this
+project) has no durable local disk between invocations, so persistence has
+to live in a real database from the start.
+
+- **Get a connection string**: Supabase project → Settings → Database →
+  Connection string → **Transaction pooler** (port 6543) is the right choice
+  for a serverless/short-lived-connection host. Set it as `DATABASE_URL`.
+  Treat it as a secret: set it as an environment variable on whatever
+  actually runs the server (Vercel project settings, or a local `.env` —
+  never commit it).
+- **Schema**: `sessions` and `challenges` tables, mirroring the shape
+  described in spec §5.3/§5.4. The server calls `ensureSchema()` on startup,
+  which idempotently runs `CREATE TABLE IF NOT EXISTS` — safe to run
+  against an already-migrated project, and enough to bootstrap a fresh one.
+- **Timestamps are stored as `TEXT`, not a native Postgres timestamp type —
+  deliberately.** The hash chain (spec §5.3) hashes each record's exact
+  field values, including the timestamp string generated in JS at write
+  time. Postgres's timestamp types reformat values on storage/read (different
+  separator, timezone notation, precision); a value read back would not be
+  byte-identical to what was written, which would silently break every hash
+  recomputation from that point on. `TEXT` stores exactly the string handed
+  to it and nothing else.
+- **Tests never touch a real database.** `packages/server/test/testDb.ts`
+  spins up [`pg-mem`](https://github.com/oguimbal/pg-mem), an in-memory
+  Postgres-compatible engine, and runs the exact same schema/SQL the app
+  runs in production — so the test suite exercises real query text with no
+  network access or live credentials required.
+- **Known gap**: raw challenge photos (spec §5.3's "keep for the duration of
+  the game so a disputed result can be manually re-verified") are still
+  stored on local disk (`UPLOAD_DIR`), which does not persist across
+  invocations on a serverless host. This needs to move to object storage
+  (e.g. a Supabase Storage bucket) before the server can actually run as
+  Vercel Functions — tracked as a follow-up, not yet done.
 
 ## Architecture
 
@@ -112,8 +154,9 @@ endpoint runs it automatically and reports the result.
 - **Photo retention** — raw photos are kept on disk for the session's duration
   (so a disputed result can be manually re-verified) and deleted when the
   session ends; the hash, rank, and confidence already in the match log are
-  kept permanently. This is the retention policy the spec recommends for
-  privacy/storage (§5.3).
+  kept permanently in Postgres. This is the retention policy the spec
+  recommends for privacy/storage (§5.3) — see the "Database" section above
+  for the serverless caveat on the disk part specifically.
 
 ### 4. Vision recognition (`packages/server/src/services/visionService.ts`)
 
@@ -151,8 +194,8 @@ All optional; sensible defaults are used for local dev.
 | Env var | Default | Purpose |
 |---|---|---|
 | `PORT` | `4000` | HTTP port |
-| `DB_PATH` | `./data/salpakan.sqlite` | SQLite file (`:memory:` under `NODE_ENV=test`) |
-| `UPLOAD_DIR` | `./uploads` | Where raw challenge photos are stored until purge |
+| `DATABASE_URL` | — (required outside tests) | Postgres connection string — see "Database" above |
+| `UPLOAD_DIR` | `./uploads` | Where raw challenge photos are stored until purge (local disk — see serverless caveat above) |
 | `CONFIDENCE_THRESHOLD` | `0.75` | Below this, recognition is rejected and the player is asked to retake |
 | `MAX_PHOTO_BYTES` | `8388608` (8MB) | Upload size cap |
 | `ANTHROPIC_API_KEY` | — | Enables real recognition via the Claude API |
@@ -183,6 +226,19 @@ All optional; sensible defaults are used for local dev.
   game is a manual action by either player.
 - No accounts/auth beyond the per-session color tokens — by design for MVP
   (spec §5.4).
+- Raw photo storage is still local disk, incompatible with serverless hosting
+  — see the "Database" section above.
+- The live Supabase project's `sessions`/`challenges` tables were originally
+  migrated with `uuid`/`timestamptz` columns for `id`/`session_id` and the
+  timestamp fields; the app code now expects plain `TEXT` for all of these
+  (see "Database" above for why, on timestamps specifically). The `id`/
+  `session_id` mismatch is harmless (Postgres accepts UUID-formatted text
+  transparently into a `uuid` column and hands it back as a plain string), but
+  the `timestamptz` columns need to be fixed — via `apply_migration` — to
+  `TEXT` before this app is pointed at that live project, or hash
+  verification will break on every record. Both tables are currently empty,
+  so the simplest fix is dropping and recreating them with the schema in
+  `packages/server/src/db.ts`.
 - The vitest/esbuild dev-dependency chain has known moderate/high advisories
   that only affect the local dev server (not exploitable in the shipped
   server or web build); harmless for this MVP but worth revisiting via

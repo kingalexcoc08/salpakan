@@ -1,7 +1,7 @@
 import cors from "cors";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
-import type { DatabaseSync } from "node:sqlite";
 import { config } from "./config.js";
+import type { Queryable } from "./db.js";
 import { createChallengeRouter } from "./routes/challengeRoutes.js";
 import { createHistoryRouter } from "./routes/historyRoutes.js";
 import { createSessionRouter } from "./routes/sessionRoutes.js";
@@ -9,7 +9,7 @@ import type { VisionService } from "./services/visionService.js";
 import { MatchStore } from "./store/matchStore.js";
 import { SessionStore } from "./store/sessionStore.js";
 
-export function createApp(db: DatabaseSync, visionService: VisionService): Express {
+export function createApp(db: Queryable, visionService: VisionService): Express {
   const app = express();
   app.use(cors({ origin: config.corsOrigin }));
   app.use(express.json());

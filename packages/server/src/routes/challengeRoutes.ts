@@ -64,55 +64,63 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
 
   router.use(requireAuth(sessionStore));
 
-  router.post("/", (req, res) => {
-    const auth = getAuth(res);
-    const session = sessionStore.getSessionById(auth.sessionId)!;
-    if (session.status !== "ACTIVE") {
-      res.status(409).json({ error: "SESSION_NOT_ACTIVE" });
-      return;
-    }
-
-    const initiator: PlayerColor = req.body?.initiator === "BLUE" || req.body?.initiator === "RED" ? req.body.initiator : auth.color;
-
+  router.post("/", async (req, res, next) => {
     try {
-      const challenge = matchStore.createChallenge(auth.sessionId, initiator);
+      const auth = getAuth(res);
+      const session = (await sessionStore.getSessionById(auth.sessionId))!;
+      if (session.status !== "ACTIVE") {
+        res.status(409).json({ error: "SESSION_NOT_ACTIVE" });
+        return;
+      }
+
+      const initiator: PlayerColor = req.body?.initiator === "BLUE" || req.body?.initiator === "RED" ? req.body.initiator : auth.color;
+
+      const challenge = await matchStore.createChallenge(auth.sessionId, initiator);
       res.status(201).json({ challengeId: challenge.id, challengeNumber: challenge.challenge_number, initiator });
     } catch (err) {
       if (err instanceof ChallengeAlreadyOpenError) {
         res.status(409).json({ error: "CHALLENGE_ALREADY_OPEN" });
         return;
       }
-      throw err;
+      next(err);
     }
   });
 
   // Lets a device discover the currently-open challenge without already
   // knowing its id — needed when the *other* player created it (two-phone
   // mode) or after a page reload.
-  router.get("/current", (req, res) => {
-    const auth = getAuth(res);
-    const open = matchStore.getOpenChallenge(auth.sessionId);
-    if (!open) {
-      res.json({ status: "NONE" });
-      return;
+  router.get("/current", async (req, res, next) => {
+    try {
+      const auth = getAuth(res);
+      const open = await matchStore.getOpenChallenge(auth.sessionId);
+      if (!open) {
+        res.json({ status: "NONE" });
+        return;
+      }
+      res.json(buildSelfView(open, auth.color));
+    } catch (err) {
+      next(err);
     }
-    res.json(buildSelfView(open, auth.color));
   });
 
-  router.get("/:challengeId", (req, res) => {
-    const auth = getAuth(res);
-    const row = matchStore.getChallenge(auth.sessionId, req.params.challengeId);
-    if (!row) {
-      res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
-      return;
+  router.get("/:challengeId", async (req, res, next) => {
+    try {
+      const auth = getAuth(res);
+      const row = await matchStore.getChallenge(auth.sessionId, req.params.challengeId);
+      if (!row) {
+        res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+        return;
+      }
+      res.json(buildSelfView(row, auth.color));
+    } catch (err) {
+      next(err);
     }
-    res.json(buildSelfView(row, auth.color));
   });
 
   router.post("/:challengeId/submissions", upload.single("photo"), async (req, res, next) => {
     try {
       const auth = getAuth(res);
-      const session = sessionStore.getSessionById(auth.sessionId)!;
+      const session = (await sessionStore.getSessionById(auth.sessionId))!;
       if (session.status !== "ACTIVE") {
         res.status(409).json({ error: "SESSION_NOT_ACTIVE" });
         return;
@@ -128,7 +136,7 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         return;
       }
 
-      const existing = matchStore.getChallenge(auth.sessionId, req.params.challengeId);
+      const existing = await matchStore.getChallenge(auth.sessionId, req.params.challengeId);
       if (!existing) {
         res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
         return;

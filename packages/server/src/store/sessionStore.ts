@@ -1,5 +1,5 @@
 import type { CaptureMode, FlagVsFlagRule, PlayerColor } from "@salpakan/shared";
-import type { DatabaseSync } from "node:sqlite";
+import type { Queryable } from "../db.js";
 import { generateSessionCode, generateSessionId, generateToken } from "../ids.js";
 import type { SessionRow } from "../types.js";
 
@@ -21,9 +21,9 @@ export interface CreatedSession {
 const MAX_CODE_ATTEMPTS = 10;
 
 export class SessionStore {
-  constructor(private readonly db: DatabaseSync) {}
+  constructor(private readonly db: Queryable) {}
 
-  createSession(params: CreateSessionParams): CreatedSession {
+  async createSession(params: CreateSessionParams): Promise<CreatedSession> {
     const id = generateSessionId();
     const now = new Date().toISOString();
     const flagVsFlagRule = params.flagVsFlagRule ?? "challengerWins";
@@ -31,7 +31,7 @@ export class SessionStore {
     let code = "";
     for (let attempt = 0; attempt < MAX_CODE_ATTEMPTS; attempt++) {
       const candidate = generateSessionCode();
-      if (!this.getSessionByCode(candidate)) {
+      if (!(await this.getSessionByCode(candidate))) {
         code = candidate;
         break;
       }
@@ -61,13 +61,11 @@ export class SessionStore {
       status = "WAITING_FOR_OPPONENT";
     }
 
-    this.db
-      .prepare(
-        `INSERT INTO sessions
-          (id, code, capture_mode, flag_vs_flag_rule, status, blue_name, red_name, blue_token, red_token, created_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      )
-      .run(
+    await this.db.query(
+      `INSERT INTO sessions
+        (id, code, capture_mode, flag_vs_flag_rule, status, blue_name, red_name, blue_token, red_token, created_at, ended_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULL)`,
+      [
         id,
         code,
         params.captureMode,
@@ -78,22 +76,25 @@ export class SessionStore {
         blueToken,
         redToken,
         now,
-      );
+      ],
+    );
 
-    return { session: this.getSessionById(id)!, tokens };
+    return { session: (await this.getSessionById(id))!, tokens };
   }
 
-  getSessionById(id: string): SessionRow | undefined {
-    return this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(id) as SessionRow | undefined;
+  async getSessionById(id: string): Promise<SessionRow | undefined> {
+    const result = await this.db.query<SessionRow>("SELECT * FROM sessions WHERE id = $1", [id]);
+    return result.rows[0];
   }
 
-  getSessionByCode(code: string): SessionRow | undefined {
-    return this.db.prepare("SELECT * FROM sessions WHERE code = ?").get(code) as SessionRow | undefined;
+  async getSessionByCode(code: string): Promise<SessionRow | undefined> {
+    const result = await this.db.query<SessionRow>("SELECT * FROM sessions WHERE code = $1", [code]);
+    return result.rows[0];
   }
 
   /** Assigns the remaining open color to a joining player and issues their token. */
-  joinSession(code: string, name?: string): { session: SessionRow; color: PlayerColor; token: string } {
-    const session = this.getSessionByCode(code);
+  async joinSession(code: string, name?: string): Promise<{ session: SessionRow; color: PlayerColor; token: string }> {
+    const session = await this.getSessionByCode(code);
     if (!session) {
       throw new Error("SESSION_NOT_FOUND");
     }
@@ -109,22 +110,23 @@ export class SessionStore {
     const nameColumn = color === "BLUE" ? "blue_name" : "red_name";
     const tokenColumn = color === "BLUE" ? "blue_token" : "red_token";
 
-    this.db
-      .prepare(`UPDATE sessions SET ${tokenColumn} = ?, ${nameColumn} = COALESCE(${nameColumn}, ?), status = 'ACTIVE' WHERE id = ?`)
-      .run(token, name ?? null, session.id);
+    await this.db.query(
+      `UPDATE sessions SET ${tokenColumn} = $1, ${nameColumn} = COALESCE(${nameColumn}, $2), status = 'ACTIVE' WHERE id = $3`,
+      [token, name ?? null, session.id],
+    );
 
-    return { session: this.getSessionById(session.id)!, color, token };
+    return { session: (await this.getSessionById(session.id))!, color, token };
   }
 
-  authenticate(sessionId: string, token: string): PlayerColor | null {
-    const session = this.getSessionById(sessionId);
+  async authenticate(sessionId: string, token: string): Promise<PlayerColor | null> {
+    const session = await this.getSessionById(sessionId);
     if (!session) return null;
     if (session.blue_token && session.blue_token === token) return "BLUE";
     if (session.red_token && session.red_token === token) return "RED";
     return null;
   }
 
-  markEnded(id: string): void {
-    this.db.prepare("UPDATE sessions SET status = 'ENDED', ended_at = ? WHERE id = ?").run(new Date().toISOString(), id);
+  async markEnded(id: string): Promise<void> {
+    await this.db.query("UPDATE sessions SET status = 'ENDED', ended_at = $1 WHERE id = $2", [new Date().toISOString(), id]);
   }
 }

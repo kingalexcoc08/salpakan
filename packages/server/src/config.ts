@@ -21,12 +21,23 @@ function envFloat(name: string, fallback: number): number {
 export const config = {
   port: envInt("PORT", 4000),
 
-  /** Where the SQLite file lives. ":memory:" is used automatically under NODE_ENV=test. */
-  dbPath:
-    process.env.DB_PATH ??
-    (process.env.NODE_ENV === "test" ? ":memory:" : path.join(packageRoot, "data", "salpakan.sqlite")),
+  /**
+   * Postgres connection string — e.g. Supabase's "Transaction pooler" URI.
+   * Required outside of tests (which run against an in-memory pg-mem
+   * instance instead — see test/testDb.ts). No longer node:sqlite / a local
+   * file: a serverless host (Vercel Functions) has no durable local disk
+   * between invocations, so persistence has to live in a real database.
+   */
+  databaseUrl: process.env.DATABASE_URL ?? "",
 
-  /** Directory raw challenge photos are written to until purged (spec §5.3 retention). */
+  /**
+   * Directory raw challenge photos are written to until purged (spec §5.3
+   * retention). NOTE: this is local disk, which does NOT persist across
+   * invocations on a serverless host. Fine for a traditional long-running
+   * host; needs to move to object storage (e.g. Supabase Storage) before
+   * this app can run as Vercel Functions — tracked as a follow-up, not yet
+   * done.
+   */
   uploadDir: process.env.UPLOAD_DIR ?? path.join(packageRoot, "uploads"),
 
   /** Recognition confidence below this triggers a "please retake the photo" response (spec §5.1). */
