@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+*.log
+.env
+.env.local
+.DS_Store
+coverage/
+*.sqlite
+*.sqlite3
+packages/server/data/
+packages/server/uploads/
+packages/server/.test-uploads/
+.vite/
