@@ -2,6 +2,7 @@
   "name": "salpakan",
   "private": true,
   "version": "0.1.0",
+  "type": "module",
   "description": "Salpakan (Game of the Generals) Digital Arbiter — MVP monorepo",
   "workspaces": [
     "packages/shared",
