@@ -1,6 +1,13 @@
 import type { CaptureMode, FlagVsFlagRule, PlayerColor, Rank } from "@salpakan/shared";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+// In dev, an empty API_BASE means requests go to a relative "/api/..." path,
+// which the Vite dev server proxies to a local API (see vite.config.ts).
+// In a production build, fall back to the deployed API's origin if
+// VITE_API_BASE_URL wasn't set at build time (e.g. a dotenv file not making
+// it through a given deploy pipeline) — a build-time env var always wins
+// when it IS present.
+const PRODUCTION_API_BASE = "https://salpakan-api.vercel.app";
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? PRODUCTION_API_BASE : "");
 
 export class ApiError extends Error {
   readonly status: number;
