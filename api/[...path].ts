@@ -26,12 +26,48 @@ async function getApp() {
       const db = openDb(process.env.DATABASE_URL);
       await ensureSchema(db);
       return createApp(db, createVisionService());
-    })();
+    })().catch((err) => {
+      // Don't cache a failed init — a transient DB hiccup (e.g. Supabase
+      // waking up) would otherwise permanently 500 every request for the
+      // rest of this warm container's lifetime. Let the next request retry.
+      appPromise = null;
+      throw err;
+    });
   }
   return appPromise;
 }
 
+const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
+
+function setCorsHeaders(res: ServerResponse) {
+  res.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN);
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  const app = await getApp();
-  app(req, res);
+  // Answer CORS preflight immediately, without touching the database — a
+  // slow/failed DB connection must never take down preflight, or the
+  // browser reports a bare "CORS error" that hides the real cause.
+  if (req.method === "OPTIONS") {
+    setCorsHeaders(res);
+    res.statusCode = 204;
+    res.end();
+    return;
+  }
+
+  try {
+    const app = await getApp();
+    app(req, res);
+  } catch (err) {
+    // getApp() failed (e.g. bad/missing DATABASE_URL, DB unreachable) before
+    // the Express app — and its own cors() middleware — ever got a chance to
+    // run. Set CORS headers by hand so the browser surfaces the real error
+    // instead of a misleading CORS failure.
+    console.error("Failed to initialize app:", err);
+    setCorsHeaders(res);
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ error: "INTERNAL_ERROR", message: err instanceof Error ? err.message : "Unknown error" }));
+  }
 }
