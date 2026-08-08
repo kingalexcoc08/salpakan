@@ -4,12 +4,21 @@ import { ensureSchema, openDb } from "../packages/server/src/db.js";
 import { createVisionService } from "../packages/server/src/services/visionService.js";
 
 /**
- * Vercel Function entrypoint — a catch-all under /api/* that hands every
- * request straight to the existing Express app unchanged (the app's own
- * routes are already mounted under /api/..., so no path rewriting is
- * needed). This is deliberately a thin wrapper, not a rewrite: the same
- * Express app also runs as a traditional long-running process via
- * packages/server/src/index.ts — only the entrypoint differs.
+ * Vercel Function entrypoint for the whole API. Every request under /api/*
+ * is routed here by an explicit rewrite in vercel.json (`/api/:path*` →
+ * `/api`) rather than relying on the `[...path].ts` filename convention —
+ * that convention turned out not to reliably match multi-segment paths
+ * (e.g. `/api/sessions/:id` 404'd at the platform level while `/api/sessions`
+ * worked) in this project's setup, so routing is now explicit instead of
+ * inferred from the filename.
+ *
+ * The request then hands straight to the existing Express app unchanged
+ * (the app's own routes are already mounted under /api/..., so no path
+ * rewriting is needed on this end — Vercel preserves the original request
+ * URL in `req.url` even after a rewrite). This is deliberately a thin
+ * wrapper, not a rewrite of the app itself: the same Express app also runs
+ * as a traditional long-running process via packages/server/src/index.ts —
+ * only the entrypoint differs.
  *
  * The app (and its Postgres pool) is built once and reused across warm
  * invocations of this function, since Vercel may reuse the same container
