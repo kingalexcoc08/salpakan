@@ -69,12 +69,31 @@ CREATE INDEX IF NOT EXISTS idx_challenges_session ON challenges (session_id, cha
  * process/module and reuse across requests.
  */
 export function openDb(connectionString: string): Pool {
-  return new Pool({
+  const pool = new Pool({
     connectionString,
     // Supabase's pooled endpoint terminates TLS in front of the pooler;
     // this mirrors Supabase's own connection examples for the `pg` package.
     ssl: { rejectUnauthorized: false },
+    // Serverless-appropriate limits: short-lived invocations shouldn't hold
+    // a big idle pool, and a hung connection attempt shouldn't hang the
+    // whole function past Vercel's own request timeout.
+    max: 5,
+    idleTimeoutMillis: 10_000,
+    connectionTimeoutMillis: 10_000,
   });
+
+  // `pg.Pool` emits 'error' on behalf of any *idle* client that errors out
+  // (dropped connection, network blip, etc.) — this is separate from any
+  // error a live query throws, which already rejects its own promise and is
+  // handled by the caller. An EventEmitter's 'error' event with no listener
+  // crashes the entire Node process, which on a serverless host takes down
+  // the whole function (surfaced to users as a bare "Serverless Function has
+  // crashed" page) instead of just failing the one request that hit it.
+  pool.on("error", (err) => {
+    console.error("Postgres pool idle client error:", err);
+  });
+
+  return pool;
 }
 
 /**
