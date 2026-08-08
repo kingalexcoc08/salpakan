@@ -228,17 +228,6 @@ All optional; sensible defaults are used for local dev.
   (spec §5.4).
 - Raw photo storage is still local disk, incompatible with serverless hosting
   — see the "Database" section above.
-- The live Supabase project's `sessions`/`challenges` tables were originally
-  migrated with `uuid`/`timestamptz` columns for `id`/`session_id` and the
-  timestamp fields; the app code now expects plain `TEXT` for all of these
-  (see "Database" above for why, on timestamps specifically). The `id`/
-  `session_id` mismatch is harmless (Postgres accepts UUID-formatted text
-  transparently into a `uuid` column and hands it back as a plain string), but
-  the `timestamptz` columns need to be fixed — via `apply_migration` — to
-  `TEXT` before this app is pointed at that live project, or hash
-  verification will break on every record. Both tables are currently empty,
-  so the simplest fix is dropping and recreating them with the schema in
-  `packages/server/src/db.ts`.
 - The vitest/esbuild dev-dependency chain has known moderate/high advisories
   that only affect the local dev server (not exploitable in the shipped
   server or web build); harmless for this MVP but worth revisiting via
