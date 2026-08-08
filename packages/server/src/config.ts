@@ -1,8 +1,16 @@
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageRoot = path.resolve(__dirname, "..");
+
+// Vercel sets VERCEL=1 on every deployed function. Its filesystem is
+// read-only everywhere except os.tmpdir() (/tmp) — writing anywhere else
+// (e.g. a folder under the deployed code itself) throws EROFS/ENOENT on
+// every single request. Detecting this automatically means production
+// doesn't depend on someone remembering to set UPLOAD_DIR by hand.
+const defaultUploadDir = process.env.VERCEL ? path.join(os.tmpdir(), "salpakan-uploads") : path.join(packageRoot, "uploads");
 
 function envInt(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -33,12 +41,14 @@ export const config = {
   /**
    * Directory raw challenge photos are written to until purged (spec §5.3
    * retention). NOTE: this is local disk, which does NOT persist across
-   * invocations on a serverless host. Fine for a traditional long-running
-   * host; needs to move to object storage (e.g. Supabase Storage) before
-   * this app can run as Vercel Functions — tracked as a follow-up, not yet
+   * invocations on a serverless host — on Vercel it defaults to /tmp (see
+   * defaultUploadDir above), the only writable path there, but /tmp is
+   * wiped between cold starts. Fine for a traditional long-running host;
+   * needs to move to object storage (e.g. Supabase Storage) for photos to
+   * durably survive on Vercel Functions — tracked as a follow-up, not yet
    * done.
    */
-  uploadDir: process.env.UPLOAD_DIR ?? path.join(packageRoot, "uploads"),
+  uploadDir: process.env.UPLOAD_DIR ?? defaultUploadDir,
 
   /** Recognition confidence below this triggers a "please retake the photo" response (spec §5.1). */
   confidenceThreshold: envFloat("CONFIDENCE_THRESHOLD", 0.75),
