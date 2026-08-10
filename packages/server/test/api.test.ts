@@ -36,6 +36,33 @@ async function createTwoPhoneMatch() {
   return { sessionId, blueToken, redToken, code };
 }
 
+/** Runs the preview step and returns its body (rank/confidence/lowConfidence/token). */
+async function preview(sessionId: string, token: string, challengeId: string, rank: Rank, confidence: number, filename = "piece.jpg") {
+  const res = await request(app)
+    .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/preview`)
+    .set("Authorization", `Bearer ${token}`)
+    .attach("photo", fixturePhoto(rank, confidence), { filename, contentType: "image/jpeg" })
+    .expect(200);
+  return res.body as { rank: Rank; confidence: number; lowConfidence: boolean; token: string };
+}
+
+/**
+ * Convenience: preview then immediately confirm the same photo/rank — the
+ * common-path helper most tests want. Always expects 200; a supertest Test
+ * builder is thenable, so returning one from an async function would
+ * collapse it into a plain (already-resolved) Response with no further
+ * `.expect(...)` chaining available — hence baking the expectation in here.
+ */
+async function submitConfirmed(sessionId: string, token: string, challengeId: string, rank: Rank, confidence: number, filename = "piece.jpg") {
+  const previewed = await preview(sessionId, token, challengeId, rank, confidence, filename);
+  return request(app)
+    .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+    .set("Authorization", `Bearer ${token}`)
+    .field("token", previewed.token)
+    .attach("photo", fixturePhoto(rank, confidence), { filename, contentType: "image/jpeg" })
+    .expect(200);
+}
+
 describe("Full two-phone challenge flow", () => {
   it("never reveals the opponent's rank live, only resolves after both submit, and reveals both in post-game history", async () => {
     const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
@@ -52,12 +79,8 @@ describe("Full two-phone challenge flow", () => {
       .expect(201);
     const challengeId = challengeRes.body.challengeId;
 
-    // BLUE submits first — must only see their own rank, and must be waiting.
-    const blueSubmitRes = await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${blueToken}`)
-      .attach("photo", fixturePhoto(Rank.Major, 0.95), { filename: "piece.jpg", contentType: "image/jpeg" })
-      .expect(200);
+    // BLUE confirms first — must only see their own rank, and must be waiting.
+    const blueSubmitRes = await submitConfirmed(sessionId, blueToken, challengeId, Rank.Major, 0.95);
 
     expect(blueSubmitRes.body.status).toBe("WAITING_FOR_OPPONENT");
     expect(blueSubmitRes.body.yourRank).toBe(Rank.Major);
@@ -65,12 +88,8 @@ describe("Full two-phone challenge flow", () => {
     expect(blueSubmitJson).not.toContain("CAPTAIN");
     expect(blueSubmitJson).not.toContain("outcome");
 
-    // RED submits second — this resolves the challenge.
-    const redSubmitRes = await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${redToken}`)
-      .attach("photo", fixturePhoto(Rank.Captain, 0.9), { filename: "piece.jpg", contentType: "image/jpeg" })
-      .expect(200);
+    // RED confirms second — this resolves the challenge.
+    const redSubmitRes = await submitConfirmed(sessionId, redToken, challengeId, Rank.Captain, 0.9);
 
     expect(redSubmitRes.body.status).toBe("RESOLVED");
     expect(redSubmitRes.body.yourRank).toBe(Rank.Captain);
@@ -109,39 +128,6 @@ describe("Full two-phone challenge flow", () => {
     expect(historyRes.body.challenges[0].result).toMatchObject({ type: "win", winner: "BLUE", loser: "RED" });
   });
 
-  it("rejects a low-confidence recognition and does not store it as a final submission", async () => {
-    const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
-    const challengeRes = await request(app)
-      .post(`/api/sessions/${sessionId}/challenges`)
-      .set("Authorization", `Bearer ${blueToken}`)
-      .send({ initiator: "BLUE" })
-      .expect(201);
-    const challengeId = challengeRes.body.challengeId;
-
-    await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${blueToken}`)
-      .attach("photo", fixturePhoto(Rank.Major, 0.4), { filename: "piece.jpg", contentType: "image/jpeg" })
-      .expect(422)
-      .expect((res) => {
-        expect(res.body.error).toBe("LOW_CONFIDENCE");
-      });
-
-    const pollRes = await request(app)
-      .get(`/api/sessions/${sessionId}/challenges/${challengeId}`)
-      .set("Authorization", `Bearer ${blueToken}`)
-      .expect(200);
-    expect(pollRes.body.status).toBe("OPEN");
-    expect(pollRes.body.yourSubmitted).toBe(false);
-
-    // Sanity: opponent submitting normally still works afterward.
-    await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${redToken}`)
-      .attach("photo", fixturePhoto(Rank.Sergeant, 0.9), { filename: "piece.jpg", contentType: "image/jpeg" })
-      .expect(200);
-  });
-
   it("rejects requests without a valid bearer token", async () => {
     const { sessionId } = await createTwoPhoneMatch();
     await request(app).post(`/api/sessions/${sessionId}/challenges`).send({ initiator: "BLUE" }).expect(401);
@@ -161,19 +147,162 @@ describe("Full two-phone challenge flow", () => {
       .expect(201);
     const challengeId = challengeRes.body.challengeId;
 
-    await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${blueToken}`)
-      .attach("photo", fixturePhoto(Rank.Private, 0.9), { filename: "a.jpg", contentType: "image/jpeg" })
-      .expect(200);
-
-    const redRes = await request(app)
-      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions`)
-      .set("Authorization", `Bearer ${redToken}`)
-      .attach("photo", fixturePhoto(Rank.Private, 0.9), { filename: "b.jpg", contentType: "image/jpeg" })
-      .expect(200);
+    await submitConfirmed(sessionId, blueToken, challengeId, Rank.Private, 0.9, "a.jpg");
+    const redRes = await submitConfirmed(sessionId, redToken, challengeId, Rank.Private, 0.9, "b.jpg");
 
     expect(redRes.body.outcome).toBe("MUTUAL_DESTRUCTION");
+  });
+});
+
+describe("Recognition confirmation flow", () => {
+  it("preview does not write anything to the challenge — the challenge stays OPEN and unsubmitted until confirm", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const previewed = await preview(sessionId, blueToken, challengeId, Rank.Major, 0.95);
+    expect(previewed.rank).toBe(Rank.Major);
+    expect(previewed.lowConfidence).toBe(false);
+    expect(previewed.token).toBeTruthy();
+
+    const pollRes = await request(app)
+      .get(`/api/sessions/${sessionId}/challenges/${challengeId}`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .expect(200);
+    expect(pollRes.body.status).toBe("OPEN");
+    expect(pollRes.body.yourSubmitted).toBe(false);
+  });
+
+  it("a rejected recognition (retake, i.e. never confirmed) leaves no trace — only the eventually-confirmed photo is logged", async () => {
+    const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    // BLUE previews a misread, rejects it (never calls confirm)...
+    await preview(sessionId, blueToken, challengeId, Rank.Sergeant, 0.9, "misread.jpg");
+    // ...then retakes and previews+confirms a different rank instead.
+    const blueSubmitRes = await submitConfirmed(sessionId, blueToken, challengeId, Rank.Major, 0.95, "retake.jpg");
+    expect(blueSubmitRes.body.yourRank).toBe(Rank.Major);
+
+    const redSubmitRes = await submitConfirmed(sessionId, redToken, challengeId, Rank.Captain, 0.9);
+    expect(redSubmitRes.body.status).toBe("RESOLVED");
+
+    await request(app).post(`/api/sessions/${sessionId}/end`).set("Authorization", `Bearer ${blueToken}`).expect(200);
+    const historyRes = await request(app)
+      .get(`/api/sessions/${sessionId}/history`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .expect(200);
+
+    // Only one challenge record exists, and it reflects the confirmed
+    // retake (Major) — the rejected preview (Sergeant) was never written.
+    expect(historyRes.body.challenges).toHaveLength(1);
+    expect(historyRes.body.challenges[0].blue.rank).toBe(Rank.Major);
+    expect(JSON.stringify(historyRes.body)).not.toContain("SERGEANT");
+  });
+
+  it("flags low confidence in the preview response instead of blocking it outright", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const previewed = await preview(sessionId, blueToken, challengeId, Rank.Major, 0.4);
+    expect(previewed.lowConfidence).toBe(true);
+    expect(previewed.confidence).toBe(0.4);
+    // The player can still choose to confirm a low-confidence read (the
+    // auto-flag can itself be a false positive) — it isn't auto-blocked.
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .field("token", previewed.token)
+      .attach("photo", fixturePhoto(Rank.Major, 0.4), { filename: "piece.jpg", contentType: "image/jpeg" })
+      .expect(200);
+  });
+
+  it("rejects confirm with a token issued to a different color", async () => {
+    const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const bluePreview = await preview(sessionId, blueToken, challengeId, Rank.Major, 0.95);
+
+    // RED tries to confirm using BLUE's token.
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+      .set("Authorization", `Bearer ${redToken}`)
+      .field("token", bluePreview.token)
+      .attach("photo", fixturePhoto(Rank.Major, 0.95), { filename: "piece.jpg", contentType: "image/jpeg" })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.error).toBe("TOKEN_MISMATCH");
+      });
+  });
+
+  it("rejects confirm when the photo doesn't match what the token was issued for", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const previewed = await preview(sessionId, blueToken, challengeId, Rank.Major, 0.95);
+
+    // Confirm with a *different* photo than the one that was recognized.
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .field("token", previewed.token)
+      .attach("photo", fixturePhoto(Rank.Captain, 0.95), { filename: "different.jpg", contentType: "image/jpeg" })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.error).toBe("PHOTO_MISMATCH");
+      });
+  });
+
+  it("rejects confirm with a missing or garbage token", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .attach("photo", fixturePhoto(Rank.Major, 0.95), { filename: "piece.jpg", contentType: "image/jpeg" })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.error).toBe("MISSING_TOKEN");
+      });
+
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .field("token", "not-a-real-token")
+      .attach("photo", fixturePhoto(Rank.Major, 0.95), { filename: "piece.jpg", contentType: "image/jpeg" })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.error).toBe("INVALID_OR_EXPIRED_TOKEN");
+      });
   });
 });
 

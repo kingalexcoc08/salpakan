@@ -141,12 +141,26 @@ endpoint runs it automatically and reports the result.
   UI's hand-off gating, not the token.
 - **Challenges** — `POST .../challenges` opens one (only one open at a time per
   session, mirroring one challenge happening on the physical board at a time).
-  Each color submits a photo via `POST .../challenges/:id/submissions`; the
-  response for that request is always a self-view (spec §5.0): your own rank,
-  and — once both sides are in — the outcome by color, never the opponent's
-  rank. Low-confidence recognition (below `CONFIDENCE_THRESHOLD`, default 0.75)
-  is rejected with a "please retake" response instead of being silently
-  guessed, and isn't stored.
+  Submitting a piece is a two-step, player-confirmed flow (recognition
+  confirmation update):
+  1. `POST .../challenges/:id/submissions/preview` — recognizes the photo and
+     returns `{rank, confidence, lowConfidence, token}` **without writing
+     anything**. `lowConfidence` flags recognition below
+     `CONFIDENCE_THRESHOLD` (default 0.75) as a warning for the player to
+     weigh themselves, rather than auto-blocking the photo outright — an
+     auto-flag can itself be a false positive.
+  2. `POST .../challenges/:id/submissions/confirm` — locks it in. Must be
+     called with the *same* photo bytes plus the `token` from step 1; the
+     rank/confidence that get written always come from inside that signed
+     token, never from anything the client sends directly, so a player can
+     only ever confirm what the server actually recognized. If the player
+     rejects the preview instead ("No, retake"), the client simply never
+     calls `/confirm` — nothing was written in step 1, so a rejected
+     recognition leaves no trace at all.
+
+  The response for `/confirm` (and every other challenge-status read) is
+  always a self-view (spec §5.0): your own rank, and — once both sides are
+  in — the outcome by color, never the opponent's rank.
 - **History** — only available once the session is manually marked `ENDED`
   (full board-state win detection is out of scope for the MVP per spec §8/§4).
   Returns every resolved challenge with both ranks and a chain-integrity
@@ -183,6 +197,14 @@ live key. This is what the server test suite uses.
   own result → "Pass to Red" → Red's own result), exactly matching the option
   the spec calls out for keeping the result screen consistent with the
   hand-off discipline.
+- **Recognition confirmation** (`CaptureView`): after a photo is read, the
+  capturing player sees a review screen — the photo, the recognized rank in
+  plain text, and (if applicable) a low-confidence warning — before anything
+  is locked in. "Yes, that's correct" confirms; "No, retake" discards the
+  photo and result entirely and returns to the camera, with no attempt limit.
+  This review screen is always a sub-state of the current capture step, so in
+  one-phone mode it necessarily happens within the current player's hand-off
+  turn, before control passes to the other player.
 - Installable as a PWA (manifest + app-shell precaching via `vite-plugin-pwa`);
   API calls always hit the network live so a stale cache can never serve a
   stale ruling.
@@ -202,6 +224,7 @@ All optional; sensible defaults are used for local dev.
 | `ANTHROPIC_VISION_MODEL` | `claude-sonnet-5` | Vision model to use |
 | `VISION_PROVIDER` | `anthropic` if a key is set, else `stub` | Force `anthropic` or `stub` explicitly |
 | `CORS_ORIGIN` | `*` | Restrict in production |
+| `SUBMISSION_TOKEN_SECRET` | falls back to `DATABASE_URL` | Signs the recognition-confirmation token (preview → confirm); no need to set explicitly since it already falls back to a secret production requires anyway |
 
 ## Open questions carried over from the spec (§9)
 

@@ -1,6 +1,6 @@
 import type { PlayerColor } from "@salpakan/shared";
 import { useState } from "react";
-import { createChallenge, getCurrentChallenge, submitPiece, type ChallengeSelfView } from "../api.js";
+import { confirmSubmission, createChallenge, getCurrentChallenge, previewSubmission, type ChallengeSelfView } from "../api.js";
 import { useInterval } from "../useInterval.js";
 import { CaptureView } from "./CaptureView.js";
 import { ResultView } from "./ResultView.js";
@@ -69,7 +69,10 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
     return (
       <CaptureView
         color={myColor}
-        submit={(file, filename) => submitPiece(sessionId, token, challenge.challengeId, file, filename)}
+        preview={(file, filename) => previewSubmission(sessionId, token, challenge.challengeId, file, filename)}
+        confirm={(file, filename, submissionToken) =>
+          confirmSubmission(sessionId, token, challenge.challengeId, file, filename, submissionToken)
+        }
         onSubmitted={setChallenge}
       />
     );

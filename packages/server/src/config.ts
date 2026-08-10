@@ -69,4 +69,17 @@ export const config = {
     | "stub",
 
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
+
+  /**
+   * Secret used to sign the short-lived "recognition confirmation" token
+   * (see submissionToken.ts) that lets a client hold onto an unconfirmed
+   * recognition result between the preview and confirm requests without the
+   * server persisting anything in between. Falls back to the (already
+   * required in production) database URL so this works without any extra
+   * manual Vercel configuration — clients never see DATABASE_URL, so it's
+   * still unguessable to them. Only the final, dev-only fallback is ever a
+   * predictable value, and that path never runs in production (DATABASE_URL
+   * is required there).
+   */
+  submissionTokenSecret: process.env.SUBMISSION_TOKEN_SECRET ?? "",
 };

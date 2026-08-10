@@ -1,24 +1,33 @@
-import type { PlayerColor } from "@salpakan/shared";
+import { RANK_LABELS, type PlayerColor } from "@salpakan/shared";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api.js";
-import type { ChallengeSelfView } from "../api.js";
+import type { ChallengeSelfView, SubmissionPreview } from "../api.js";
 
 interface Props {
   color: PlayerColor;
-  submit: (file: Blob, filename: string) => Promise<ChallengeSelfView>;
+  preview: (file: Blob, filename: string) => Promise<SubmissionPreview>;
+  confirm: (file: Blob, filename: string, token: string) => Promise<ChallengeSelfView>;
   onSubmitted: (view: ChallengeSelfView) => void;
 }
 
 /**
- * Photo capture + submit for one player's piece. Handles the low-confidence
- * "please retake" response (spec §5.1) by clearing the selection and asking
- * again rather than silently guessing.
+ * Photo capture, recognition preview, and confirm for one player's piece
+ * (recognition-confirmation update). Two phases:
+ *  - SELECT: pick a photo, then ask the server what rank it reads.
+ *  - REVIEW: shown only after a successful recognition — the player sees
+ *    the photo and recognized rank and must explicitly confirm before
+ *    anything is locked in. "No, retake" discards the photo and result
+ *    entirely and returns to SELECT; nothing was ever written server-side
+ *    for a rejected recognition.
+ * This never shows anything about the opponent's piece — it's scoped to
+ * whichever color is currently capturing, same as before.
  */
-export function CaptureView({ color, submit, onSubmitted }: Props) {
+export function CaptureView({ color, preview, confirm, onSubmitted }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [recognized, setRecognized] = useState<SubmissionPreview | null>(null);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ kind: "error" | "retake"; text: string } | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -35,30 +44,79 @@ export function CaptureView({ color, submit, onSubmitted }: Props) {
     setPreviewUrl(picked ? URL.createObjectURL(picked) : null);
   }
 
-  async function handleSubmit() {
+  async function handleRecognize() {
     if (!file) return;
     setBusy(true);
     setMessage(null);
     try {
-      const view = await submit(file, file.name);
-      onSubmitted(view);
+      const result = await preview(file, file.name);
+      setRecognized(result);
     } catch (err) {
-      if (err instanceof ApiError && err.status === 422) {
-        const body = err.body as { message?: string } | null;
-        setMessage({ kind: "retake", text: body?.message ?? "Could not confidently read the rank — please retake the photo." });
-        setFile(null);
-        if (previewUrl) URL.revokeObjectURL(previewUrl);
-        setPreviewUrl(null);
-        if (inputRef.current) inputRef.current.value = "";
-      } else {
-        setMessage({ kind: "error", text: err instanceof ApiError ? err.message : "Upload failed — check your connection and try again." });
-      }
+      setMessage(err instanceof ApiError ? err.message : "Upload failed — check your connection and try again.");
     } finally {
       setBusy(false);
     }
   }
 
+  async function handleConfirm() {
+    if (!file || !recognized) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const view = await confirm(file, file.name, recognized.token);
+      onSubmitted(view);
+    } catch (err) {
+      setMessage(err instanceof ApiError ? err.message : "Could not lock in your submission — check your connection and try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function handleRetake() {
+    // Discard this photo and its recognition result entirely. Nothing was
+    // ever written to the server for it — the preview step never touches
+    // the challenge record, so there is nothing to undo here, just local
+    // state to reset before letting the player try again.
+    setRecognized(null);
+    setMessage(null);
+    setFile(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
   const sideClass = color === "BLUE" ? "pill-blue" : "pill-red";
+
+  if (recognized) {
+    return (
+      <div className="card stack">
+        <span className={`pill ${sideClass}`}>{color}</span>
+        <h2>Confirm your piece</h2>
+
+        {previewUrl && <img src={previewUrl} alt="Your piece" className="photo-preview" />}
+
+        <p>
+          We read this as: <strong>{RANK_LABELS[recognized.rank]}</strong>
+        </p>
+
+        {recognized.lowConfidence && (
+          <div className="hint-banner">
+            We're not fully confident in this read — blur, glare, or tilt can cause a misread. Double-check it matches
+            your piece before confirming, or retake for a clearer photo.
+          </div>
+        )}
+
+        {message && <div className="error-banner">{message}</div>}
+
+        <button className="btn btn-primary" onClick={handleConfirm} disabled={busy}>
+          {busy ? <span className="spinner" /> : "Yes, that's correct"}
+        </button>
+        <button className="btn btn-secondary" onClick={handleRetake} disabled={busy}>
+          No, retake
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="card stack">
@@ -84,10 +142,10 @@ export function CaptureView({ color, submit, onSubmitted }: Props) {
         style={{ color: "var(--text-dim)" }}
       />
 
-      {message && <div className={message.kind === "retake" ? "hint-banner" : "error-banner"}>{message.text}</div>}
+      {message && <div className="error-banner">{message}</div>}
 
-      <button className="btn btn-primary" onClick={handleSubmit} disabled={!file || busy}>
-        {busy ? <span className="spinner" /> : "Submit my piece"}
+      <button className="btn btn-primary" onClick={handleRecognize} disabled={!file || busy}>
+        {busy ? <span className="spinner" /> : "Read my piece"}
       </button>
     </div>
   );

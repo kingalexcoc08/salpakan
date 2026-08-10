@@ -149,23 +149,55 @@ export function getChallenge(sessionId: string, token: string, challengeId: stri
   return request(`/sessions/${sessionId}/challenges/${challengeId}`, { headers: authHeaders(token) });
 }
 
-export interface LowConfidenceError {
-  error: "LOW_CONFIDENCE";
+export interface SubmissionPreview {
+  rank: Rank;
   confidence: number;
-  threshold: number;
-  message: string;
+  /** True when confidence is below the server's retake threshold — shown as a warning, not an auto-block (see CaptureView). */
+  lowConfidence: boolean;
+  /** Opaque, signed — hand this back unchanged to confirmSubmission(). */
+  token: string;
 }
 
-export async function submitPiece(
+/**
+ * Step 1 of the recognition-confirmation flow: runs recognition on the
+ * photo and returns what was read, without locking anything in yet. Call
+ * confirmSubmission() to actually submit it, or just discard the result to
+ * retake — nothing is written server-side until confirmSubmission().
+ */
+export function previewSubmission(
   sessionId: string,
   token: string,
   challengeId: string,
   photo: Blob,
   filename: string,
+): Promise<SubmissionPreview> {
+  const form = new FormData();
+  form.append("photo", photo, filename);
+  return request(`/sessions/${sessionId}/challenges/${challengeId}/submissions/preview`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: form,
+  });
+}
+
+/**
+ * Step 2: locks in a previously previewed recognition. Must be called with
+ * the exact same photo and the token returned by previewSubmission() — the
+ * server re-derives the rank from the token, never from anything sent here
+ * directly, so this can only ever confirm what was actually recognized.
+ */
+export function confirmSubmission(
+  sessionId: string,
+  token: string,
+  challengeId: string,
+  photo: Blob,
+  filename: string,
+  submissionToken: string,
 ): Promise<ChallengeSelfView> {
   const form = new FormData();
   form.append("photo", photo, filename);
-  return request(`/sessions/${sessionId}/challenges/${challengeId}/submissions`, {
+  form.append("token", submissionToken);
+  return request(`/sessions/${sessionId}/challenges/${challengeId}/submissions/confirm`, {
     method: "POST",
     headers: authHeaders(token),
     body: form,

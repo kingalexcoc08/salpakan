@@ -1,10 +1,11 @@
-import type { PlayerColor } from "@salpakan/shared";
+import { sha256HexBytes, type PlayerColor } from "@salpakan/shared";
 import { Router } from "express";
 import multer from "multer";
 import { getAuth, requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { savePhoto } from "../photoStorage.js";
 import type { VisionService } from "../services/visionService.js";
+import { signSubmissionToken, verifySubmissionToken } from "../submissionToken.js";
 import { ChallengeAlreadyOpenError, ChallengeAlreadyResolvedError, ChallengeNotFoundError, MatchStore } from "../store/matchStore.js";
 import type { SessionStore } from "../store/sessionStore.js";
 import type { ChallengeRow } from "../types.js";
@@ -117,7 +118,12 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
     }
   });
 
-  router.post("/:challengeId/submissions", upload.single("photo"), async (req, res, next) => {
+  // Step 1 of the recognition-confirmation flow: recognize the photo and
+  // hand back a signed token describing the result, but write nothing to
+  // the challenge yet. If the player rejects this recognition ("No,
+  // retake"), the client simply never calls /confirm — nothing here ever
+  // touched the database, so a rejected attempt leaves no trace at all.
+  router.post("/:challengeId/submissions/preview", upload.single("photo"), async (req, res, next) => {
     try {
       const auth = getAuth(res);
       const session = (await sessionStore.getSessionById(auth.sessionId))!;
@@ -147,14 +153,87 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
       }
 
       const recognition = await visionService.recognizeRank(file.buffer, file.mimetype);
+      const photoHash = await sha256HexBytes(file.buffer);
+      const issuedAt = Date.now();
 
-      if (recognition.confidence < config.confidenceThreshold) {
-        res.status(422).json({
-          error: "LOW_CONFIDENCE",
-          confidence: recognition.confidence,
-          threshold: config.confidenceThreshold,
-          message: "Could not confidently read the rank — please retake the photo with better lighting/focus.",
+      const token = signSubmissionToken({
+        sessionId: auth.sessionId,
+        challengeId: req.params.challengeId,
+        color: auth.color,
+        rank: recognition.rank,
+        confidence: recognition.confidence,
+        photoHash,
+        issuedAt,
+      });
+
+      // No longer a hard block — the confirmation screen shows this flag
+      // prominently and lets the player decide (an auto-flag can itself be
+      // a false positive), rather than forcing a retake before they ever
+      // see the recognized rank.
+      res.status(200).json({
+        rank: recognition.rank,
+        confidence: recognition.confidence,
+        lowConfidence: recognition.confidence < config.confidenceThreshold,
+        token,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Step 2: lock in a previously previewed recognition. The rank/confidence
+  // that get written are always the ones inside the signed token — never
+  // anything the client sends directly — so a player confirming can only
+  // ever lock in what the server actually recognized from their photo.
+  router.post("/:challengeId/submissions/confirm", upload.single("photo"), async (req, res, next) => {
+    try {
+      const auth = getAuth(res);
+      const session = (await sessionStore.getSessionById(auth.sessionId))!;
+      if (session.status !== "ACTIVE") {
+        res.status(409).json({ error: "SESSION_NOT_ACTIVE" });
+        return;
+      }
+
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: "MISSING_PHOTO", message: "Include the same piece photo as multipart field 'photo'." });
+        return;
+      }
+
+      const token = typeof req.body?.token === "string" ? req.body.token : null;
+      if (!token) {
+        res.status(400).json({ error: "MISSING_TOKEN", message: "Include the token returned by the preview step." });
+        return;
+      }
+      const payload = verifySubmissionToken(token);
+      if (!payload) {
+        res.status(400).json({
+          error: "INVALID_OR_EXPIRED_TOKEN",
+          message: "That recognition result has expired — please retake the photo.",
         });
+        return;
+      }
+      if (payload.sessionId !== auth.sessionId || payload.challengeId !== req.params.challengeId || payload.color !== auth.color) {
+        res.status(400).json({ error: "TOKEN_MISMATCH" });
+        return;
+      }
+
+      const photoHash = await sha256HexBytes(file.buffer);
+      if (photoHash !== payload.photoHash) {
+        res.status(400).json({
+          error: "PHOTO_MISMATCH",
+          message: "The photo being confirmed doesn't match what was recognized — please retake and confirm again.",
+        });
+        return;
+      }
+
+      const existing = await matchStore.getChallenge(auth.sessionId, req.params.challengeId);
+      if (!existing) {
+        res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+        return;
+      }
+      if (existing.status !== "OPEN") {
+        res.status(409).json({ error: "CHALLENGE_ALREADY_RESOLVED" });
         return;
       }
 
@@ -164,7 +243,7 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         auth.sessionId,
         req.params.challengeId,
         auth.color,
-        { photoHash: stored.hash, photoPath: stored.path, rank: recognition.rank, confidence: recognition.confidence },
+        { photoHash: stored.hash, photoPath: stored.path, rank: payload.rank, confidence: payload.confidence },
         session.flag_vs_flag_rule,
       );
 
