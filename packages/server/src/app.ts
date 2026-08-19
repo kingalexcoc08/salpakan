@@ -7,6 +7,7 @@ import { createHistoryRouter } from "./routes/historyRoutes.js";
 import { createSessionRouter } from "./routes/sessionRoutes.js";
 import type { VisionService } from "./services/visionService.js";
 import { MatchStore } from "./store/matchStore.js";
+import { RecognitionFeedbackStore } from "./store/recognitionFeedbackStore.js";
 import { SessionStore } from "./store/sessionStore.js";
 
 export function createApp(db: Queryable, visionService: VisionService): Express {
@@ -16,11 +17,15 @@ export function createApp(db: Queryable, visionService: VisionService): Express 
 
   const sessionStore = new SessionStore(db);
   const matchStore = new MatchStore(db);
+  const recognitionFeedbackStore = new RecognitionFeedbackStore(db);
 
   app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
   app.use("/api/sessions", createSessionRouter(sessionStore, matchStore));
-  app.use("/api/sessions/:sessionId/challenges", createChallengeRouter(sessionStore, matchStore, visionService));
+  app.use(
+    "/api/sessions/:sessionId/challenges",
+    createChallengeRouter(sessionStore, matchStore, visionService, recognitionFeedbackStore),
+  );
   app.use("/api/sessions/:sessionId/history", createHistoryRouter(sessionStore, matchStore));
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars

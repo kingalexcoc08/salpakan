@@ -5,13 +5,15 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { config } from "../src/config.js";
+import type { Queryable } from "../src/db.js";
 import { createTestDb } from "./testDb.js";
 import { fixturePhoto, ScriptedVisionService } from "./testVisionService.js";
 
 let app: Express;
+let db: Queryable;
 
 beforeEach(async () => {
-  const db = await createTestDb();
+  db = await createTestDb();
   app = createApp(db, new ScriptedVisionService());
 });
 
@@ -303,6 +305,84 @@ describe("Recognition confirmation flow", () => {
       .expect((res) => {
         expect(res.body.error).toBe("INVALID_OR_EXPIRED_TOKEN");
       });
+  });
+});
+
+describe("Recognition accuracy feedback (spec §2.5)", () => {
+  it("logs a rejected recognition, and backfills the confirmed rank once the player retakes and confirms", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const rejected = await preview(sessionId, blueToken, challengeId, Rank.Sergeant, 0.5, "misread.jpg");
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/feedback`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ token: rejected.token })
+      .expect(204);
+
+    const afterReject = await db.query<{ guessed_rank: string; confirmed_rank: string | null }>(
+      "SELECT guessed_rank, confirmed_rank FROM recognition_feedback WHERE session_id = $1 AND challenge_id = $2",
+      [sessionId, challengeId],
+    );
+    expect(afterReject.rows).toHaveLength(1);
+    expect(afterReject.rows[0].guessed_rank).toBe(Rank.Sergeant);
+    expect(afterReject.rows[0].confirmed_rank).toBeNull();
+
+    // Not part of the tamper-evident match log — the challenge is still OPEN, nothing was written there.
+    const pollRes = await request(app)
+      .get(`/api/sessions/${sessionId}/challenges/${challengeId}`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .expect(200);
+    expect(pollRes.body.status).toBe("OPEN");
+
+    await submitConfirmed(sessionId, blueToken, challengeId, Rank.Major, 0.95, "retake.jpg");
+
+    const afterConfirm = await db.query<{ confirmed_rank: string | null }>(
+      "SELECT confirmed_rank FROM recognition_feedback WHERE session_id = $1 AND challenge_id = $2",
+      [sessionId, challengeId],
+    );
+    expect(afterConfirm.rows[0].confirmed_rank).toBe(Rank.Major);
+  });
+
+  it("rejects a feedback token that belongs to a different color", async () => {
+    const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    const bluePreview = await preview(sessionId, blueToken, challengeId, Rank.Major, 0.6);
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/feedback`)
+      .set("Authorization", `Bearer ${redToken}`)
+      .send({ token: bluePreview.token })
+      .expect(400)
+      .expect((res) => {
+        expect(res.body.error).toBe("TOKEN_MISMATCH");
+      });
+  });
+
+  it("treats a missing/garbage feedback token as a harmless no-op rather than an error", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/submissions/feedback`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ token: "not-a-real-token" })
+      .expect(204);
   });
 });
 

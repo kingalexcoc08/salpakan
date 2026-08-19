@@ -59,6 +59,27 @@ CREATE TABLE IF NOT EXISTS challenges (
 );
 
 CREATE INDEX IF NOT EXISTS idx_challenges_session ON challenges (session_id, challenge_number);
+
+-- Recognition accuracy feedback (spec update "Fix Low Recognition Accuracy"
+-- §2.5) — a labeled example every time a player rejects a recognized rank
+-- and later confirms a different one for the same piece. Deliberately NOT
+-- part of the hash-chained match log: no previous_hash/record_hash columns,
+-- never read by the arbitration/history/integrity-verification code paths.
+-- Purely for measuring and later tuning recognition accuracy.
+CREATE TABLE IF NOT EXISTS recognition_feedback (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  challenge_id TEXT NOT NULL,
+  color TEXT NOT NULL,
+  guessed_rank TEXT NOT NULL,
+  guessed_confidence DOUBLE PRECISION NOT NULL,
+  photo_hash TEXT NOT NULL,
+  confirmed_rank TEXT,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_recognition_feedback_lookup ON recognition_feedback (session_id, challenge_id, color);
 `;
 
 /**

@@ -4,9 +4,11 @@ import multer from "multer";
 import { getAuth, requireAuth } from "../auth.js";
 import { config } from "../config.js";
 import { savePhoto } from "../photoStorage.js";
+import { normalizeImage } from "../services/imageNormalize.js";
 import type { VisionService } from "../services/visionService.js";
 import { signSubmissionToken, verifySubmissionToken } from "../submissionToken.js";
 import { ChallengeAlreadyOpenError, ChallengeAlreadyResolvedError, ChallengeNotFoundError, MatchStore } from "../store/matchStore.js";
+import type { RecognitionFeedbackStore } from "../store/recognitionFeedbackStore.js";
 import type { SessionStore } from "../store/sessionStore.js";
 import type { ChallengeRow } from "../types.js";
 
@@ -60,7 +62,12 @@ function buildSelfView(row: ChallengeRow, color: PlayerColor) {
   };
 }
 
-export function createChallengeRouter(sessionStore: SessionStore, matchStore: MatchStore, visionService: VisionService): Router {
+export function createChallengeRouter(
+  sessionStore: SessionStore,
+  matchStore: MatchStore,
+  visionService: VisionService,
+  recognitionFeedbackStore: RecognitionFeedbackStore,
+): Router {
   const router = Router({ mergeParams: true });
 
   router.use(requireAuth(sessionStore));
@@ -152,8 +159,13 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         return;
       }
 
-      const recognition = await visionService.recognizeRank(file.buffer, file.mimetype);
-      const photoHash = await sha256HexBytes(file.buffer);
+      // Safety-net server-side downscale (spec §2.3) — a no-op for images
+      // already within bounds, deterministic for oversized ones, so this
+      // never breaks the preview/confirm photo-hash check below.
+      const normalized = await normalizeImage(file.buffer, file.mimetype);
+
+      const recognition = await visionService.recognizeRank(normalized.buffer, normalized.mimeType);
+      const photoHash = await sha256HexBytes(normalized.buffer);
       const issuedAt = Date.now();
 
       const token = signSubmissionToken({
@@ -218,7 +230,11 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         return;
       }
 
-      const photoHash = await sha256HexBytes(file.buffer);
+      // Same deterministic safety-net downscale as /preview — re-running it
+      // on the identical original bytes resent here reproduces the same
+      // output, so this photo-hash comparison still works.
+      const normalized = await normalizeImage(file.buffer, file.mimetype);
+      const photoHash = await sha256HexBytes(normalized.buffer);
       if (photoHash !== payload.photoHash) {
         res.status(400).json({
           error: "PHOTO_MISMATCH",
@@ -237,7 +253,7 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         return;
       }
 
-      const stored = await savePhoto(auth.sessionId, req.params.challengeId, auth.color, file.buffer, file.mimetype);
+      const stored = await savePhoto(auth.sessionId, req.params.challengeId, auth.color, normalized.buffer, normalized.mimeType);
 
       const updated = await matchStore.submitPiece(
         auth.sessionId,
@@ -246,6 +262,16 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         { photoHash: stored.hash, photoPath: stored.path, rank: payload.rank, confidence: payload.confidence },
         session.flag_vs_flag_rule,
       );
+
+      // Backfill any earlier rejected recognitions for this same
+      // challenge+color with what was actually confirmed (spec §2.5) — a
+      // no-op if the player got it right on the first try.
+      await recognitionFeedbackStore.linkConfirmedRank({
+        sessionId: auth.sessionId,
+        challengeId: req.params.challengeId,
+        color: auth.color,
+        confirmedRank: payload.rank,
+      });
 
       res.status(200).json(buildSelfView(updated, auth.color));
     } catch (err) {
@@ -257,6 +283,49 @@ export function createChallengeRouter(sessionStore: SessionStore, matchStore: Ma
         res.status(409).json({ error: "CHALLENGE_ALREADY_RESOLVED" });
         return;
       }
+      next(err);
+    }
+  });
+
+  // Logs a rejected recognition ("No, retake") for later accuracy tuning
+  // (spec §2.5) — a labeled (guessed rank) example, separate from the
+  // hash-chained match log. Takes only the token from the rejected preview
+  // (no photo re-upload needed — the token already carries the guessed
+  // rank/confidence/photo hash); the eventual confirmed rank, if any, gets
+  // backfilled onto this row from the /confirm handler above. Best-effort:
+  // failing to log feedback must never block the player from retaking.
+  router.post("/:challengeId/submissions/feedback", async (req, res, next) => {
+    try {
+      const auth = getAuth(res);
+      const token = typeof req.body?.token === "string" ? req.body.token : null;
+      if (!token) {
+        res.status(400).json({ error: "MISSING_TOKEN" });
+        return;
+      }
+      const payload = verifySubmissionToken(token);
+      if (!payload) {
+        // The preview this refers to already expired/was malformed — there's
+        // nothing meaningful to log, but this isn't the player's fault and
+        // shouldn't block them from retaking, so treat it as a no-op.
+        res.status(204).end();
+        return;
+      }
+      if (payload.sessionId !== auth.sessionId || payload.challengeId !== req.params.challengeId || payload.color !== auth.color) {
+        res.status(400).json({ error: "TOKEN_MISMATCH" });
+        return;
+      }
+
+      await recognitionFeedbackStore.recordRejection({
+        sessionId: auth.sessionId,
+        challengeId: req.params.challengeId,
+        color: auth.color,
+        guessedRank: payload.rank,
+        guessedConfidence: payload.confidence,
+        photoHash: payload.photoHash,
+      });
+
+      res.status(204).end();
+    } catch (err) {
       next(err);
     }
   });

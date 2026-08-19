@@ -8,6 +8,10 @@ export function generateChallengeId(): string {
   return randomUUID();
 }
 
+export function generateFeedbackId(): string {
+  return randomUUID();
+}
+
 /** Bearer token handed to a joined player, scoped to their color. */
 export function generateToken(): string {
   return randomBytes(24).toString("hex");

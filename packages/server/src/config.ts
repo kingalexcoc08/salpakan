@@ -68,6 +68,25 @@ export const config = {
     | "anthropic"
     | "stub",
 
+  /**
+   * How many few-shot reference images (rankReferences.ts) to attach to each
+   * recognition call (spec update "Fix Low Recognition Accuracy" §2.2):
+   * "none" (cheapest), "grouped" (one per rank-encoding family — the spec's
+   * suggested fallback if attaching all 15 is too expensive/slow), or "full"
+   * (one per rank). Defaults to "grouped". Has no effect at all while
+   * REFERENCE_IMAGES is empty (no real photos loaded yet) — every mode
+   * degrades to "none" until reference photos are populated.
+   */
+  visionReferenceMode: (process.env.VISION_REFERENCE_MODE ?? "grouped") as "none" | "grouped" | "full",
+
+  /**
+   * Safety-net cap (longest side, in pixels) for images sent to the vision
+   * API and saved to disk — normalizeImage() downscales anything larger
+   * server-side (spec §2.3), independent of whatever preprocessing the
+   * client already did. A no-op for images already under this size.
+   */
+  maxUploadDimension: envInt("MAX_UPLOAD_DIMENSION", 1600),
+
   corsOrigin: process.env.CORS_ORIGIN ?? "*",
 
   /**

@@ -174,16 +174,53 @@ endpoint runs it automatically and reports the result.
 
 ### 4. Vision recognition (`packages/server/src/services/visionService.ts`)
 
-`AnthropicVisionService` sends the photo to the Claude API as an image content
-block and asks for strict JSON (`{"rank": "...", "confidence": 0..1}`) against
-the 15 canonical rank codes. Set `ANTHROPIC_API_KEY` to use it; `ANTHROPIC_VISION_MODEL`
-defaults to `claude-sonnet-5` and can be overridden (e.g. to a cheaper/faster
-model) via env var.
+`AnthropicVisionService` sends the photo (plus any configured few-shot
+reference images) to the Claude API as image content blocks and asks for
+strict, structured JSON — `{"rank": "...", "confidence": 0..1, "reasoning":
+"..."}` — against the 15 canonical rank codes. If the model's first response
+doesn't parse into a valid rank from that closed set, it's retried once with
+a sharper reminder before giving up (rather than silently guessing). Set
+`ANTHROPIC_API_KEY` to use it; `ANTHROPIC_VISION_MODEL` defaults to
+`claude-sonnet-5` and can be overridden (e.g. to a cheaper/faster model) via
+env var.
 
 Without an API key, the server automatically falls back to `StubVisionService`
 — a clearly-labeled, deterministic offline stand-in (**not a real classifier**,
 never use in production) so the rest of the app is fully exercisable without a
 live key. This is what the server test suite uses.
+
+**Recognition accuracy (`packages/server/src/services/rankReferences.ts`)** —
+spec update "Fix Low Recognition Accuracy":
+- `RANK_VISUAL_HINTS` gives each of the 15 ranks a set-specific visual
+  description (text + icon, grounded from the physical set actually in use)
+  baked into the prompt, instead of a single generic "what rank is this"
+  ask.
+- `REFERENCE_IMAGES` is the slot for true few-shot reference photos (one
+  clean close-up per rank) — currently empty; populate it (rank + base64 +
+  mimeType per entry) once individual photos are available and every
+  recognition call picks them up automatically, no other code changes
+  needed. `VISION_REFERENCE_MODE` controls how many get attached per call:
+  `none` (cheapest), `grouped` (default — at most one per rank-encoding
+  family, the spec's suggested fallback if attaching all 15 is too
+  expensive/slow), or `full` (one per rank). Every mode is a no-op while
+  `REFERENCE_IMAGES` is empty.
+- `normalizeImage()` (`imageNormalize.ts`) is a server-side safety net:
+  downscales anything over `MAX_UPLOAD_DIMENSION` (longest side, default
+  1600px) before it reaches the vision API or disk, independent of whatever
+  the client already did. Uses `jimp` (pure JS, no native bindings — safe on
+  Vercel's serverless runtime). A no-op for images already within bounds,
+  and deterministic for oversized ones, so it never breaks the recognition-
+  confirmation flow's preview/confirm photo-hash check.
+- **Recognition feedback** (`recognition_feedback` table /
+  `RecognitionFeedbackStore`): every time a player rejects a recognition
+  (the confirmation screen's "No, retake") the guessed rank/confidence and
+  the photo's hash are logged; if they then confirm a different rank for
+  that same challenge, the row is backfilled with what was actually
+  confirmed — a labeled (guessed → confirmed) example of a misread. This is
+  a deliberately separate, non-chained table (no `previous_hash`/
+  `record_hash` columns, never read by arbitration/history/integrity
+  verification) purely for measuring and later tuning recognition accuracy —
+  not part of the tamper-evident match log.
 
 ### 5. Web PWA (`packages/web`)
 
@@ -205,6 +242,21 @@ live key. This is what the server test suite uses.
   This review screen is always a sub-state of the current capture step, so in
   one-phone mode it necessarily happens within the current player's hand-off
   turn, before control passes to the other player.
+- **Capture guide + client-side preprocessing** (`CameraCapture.tsx`,
+  `imagePreprocessing.ts`, `imageCanvasOps.ts`) — spec update "Fix Low
+  Recognition Accuracy" §2.3/§2.4: the capture screen uses a live in-app
+  camera feed (`getUserMedia`) with an on-screen alignment frame and the
+  instruction "Fill the frame with just the piece, avoid glare" — this is
+  what makes auto-cropping possible at all, since there's no way to overlay
+  a guide frame on top of the OS's native camera app. On capture, the photo
+  is cropped to that guide frame and resized to a consistent max dimension
+  (1600px) client-side, before upload. If the camera is unavailable/denied
+  (permissions, unsupported browser, non-HTTPS), it falls back to a plain
+  file picker — in that path there's no guide frame to crop to, so the
+  chosen photo is just resized to the same max dimension. The crop/resize
+  math (`computeCropAndResize` in `imagePreprocessing.ts`) is a pure,
+  DOM-free function so it's directly unit-tested; the actual canvas
+  drawing/encoding lives in the separate `imageCanvasOps.ts`.
 - Installable as a PWA (manifest + app-shell precaching via `vite-plugin-pwa`);
   API calls always hit the network live so a stale cache can never serve a
   stale ruling.
@@ -218,7 +270,9 @@ All optional; sensible defaults are used for local dev.
 | `PORT` | `4000` | HTTP port |
 | `DATABASE_URL` | — (required outside tests) | Postgres connection string — see "Database" above |
 | `UPLOAD_DIR` | `./uploads` | Where raw challenge photos are stored until purge (local disk — see serverless caveat above) |
-| `CONFIDENCE_THRESHOLD` | `0.75` | Below this, recognition is rejected and the player is asked to retake |
+| `CONFIDENCE_THRESHOLD` | `0.75` | Below this, the confirmation screen shows a low-confidence warning (not an auto-block) |
+| `VISION_REFERENCE_MODE` | `grouped` | Few-shot reference images attached per recognition call: `none` / `grouped` / `full` — see "Recognition accuracy" above |
+| `MAX_UPLOAD_DIMENSION` | `1600` | Server-side safety-net cap (longest side, px) for images sent to the vision API / saved to disk |
 | `MAX_PHOTO_BYTES` | `8388608` (8MB) | Upload size cap |
 | `ANTHROPIC_API_KEY` | — | Enables real recognition via the Claude API |
 | `ANTHROPIC_VISION_MODEL` | `claude-sonnet-5` | Vision model to use |

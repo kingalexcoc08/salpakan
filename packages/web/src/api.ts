@@ -204,6 +204,24 @@ export function confirmSubmission(
   });
 }
 
+/**
+ * Best-effort accuracy-feedback log (spec update "Fix Low Recognition
+ * Accuracy" §2.5) for a rejected recognition ("No, retake") — fire-and-
+ * forget from the caller's perspective; a failure here must never block
+ * the player from retaking, so this deliberately doesn't throw.
+ */
+export async function reportRejectedRecognition(sessionId: string, token: string, challengeId: string, submissionToken: string): Promise<void> {
+  try {
+    await request(`/sessions/${sessionId}/challenges/${challengeId}/submissions/feedback`, {
+      method: "POST",
+      headers: { ...authHeaders(token), "Content-Type": "application/json" },
+      body: JSON.stringify({ token: submissionToken }),
+    });
+  } catch {
+    // Logging accuracy feedback is not part of the game flow — swallow.
+  }
+}
+
 export interface HistoryResponse {
   sessionId: string;
   blueName: string | null;

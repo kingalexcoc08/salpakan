@@ -1,6 +1,6 @@
 import type { PlayerColor, Rank } from "@salpakan/shared";
 import { useState } from "react";
-import { confirmSubmission, createChallenge, getChallenge, previewSubmission } from "../api.js";
+import { confirmSubmission, createChallenge, getChallenge, previewSubmission, reportRejectedRecognition } from "../api.js";
 import { CaptureView } from "./CaptureView.js";
 import { HandoffScreen } from "./HandoffScreen.js";
 import { ResultView } from "./ResultView.js";
@@ -105,6 +105,7 @@ export function OnePhoneMatch({ sessionId, tokens, blueName, redName }: Props) {
         confirm={(file, filename, submissionToken) =>
           confirmSubmission(sessionId, tokens[phase.color]!, phase.challengeId, file, filename, submissionToken)
         }
+        reportRejected={(submissionToken) => reportRejectedRecognition(sessionId, tokens[phase.color]!, phase.challengeId, submissionToken)}
         onSubmitted={() => {
           // Never surface this player's rank/result here — lock straight to
           // the next hand-off (spec §4: "not shown on screen at all after capture").

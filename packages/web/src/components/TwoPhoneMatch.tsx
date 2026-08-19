@@ -1,6 +1,6 @@
 import type { PlayerColor } from "@salpakan/shared";
 import { useState } from "react";
-import { confirmSubmission, createChallenge, getCurrentChallenge, previewSubmission, type ChallengeSelfView } from "../api.js";
+import { confirmSubmission, createChallenge, getCurrentChallenge, previewSubmission, reportRejectedRecognition, type ChallengeSelfView } from "../api.js";
 import { useInterval } from "../useInterval.js";
 import { CaptureView } from "./CaptureView.js";
 import { ResultView } from "./ResultView.js";
@@ -73,6 +73,7 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
         confirm={(file, filename, submissionToken) =>
           confirmSubmission(sessionId, token, challenge.challengeId, file, filename, submissionToken)
         }
+        reportRejected={(submissionToken) => reportRejectedRecognition(sessionId, token, challenge.challengeId, submissionToken)}
         onSubmitted={setChallenge}
       />
     );

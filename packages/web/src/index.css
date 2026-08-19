@@ -323,3 +323,34 @@ table.history-table td {
 .footer-nav .btn {
   flex: 1;
 }
+
+.camera-capture {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.camera-frame {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: #000;
+}
+
+.camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Alignment guide (spec: "on-screen alignment frame/box") — matches CAPTURE_GUIDE_RECT (70% centered box) in imagePreprocessing.ts. Keep these two in sync. */
+.camera-guide {
+  position: absolute;
+  inset: 15%;
+  border: 2px dashed var(--gold);
+  border-radius: 10px;
+  box-shadow: 0 0 0 999px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
