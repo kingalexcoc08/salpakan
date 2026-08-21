@@ -190,20 +190,31 @@ never use in production) so the rest of the app is fully exercisable without a
 live key. This is what the server test suite uses.
 
 **Recognition accuracy (`packages/server/src/services/rankReferences.ts`)** —
-spec update "Fix Low Recognition Accuracy":
-- `RANK_VISUAL_HINTS` gives each of the 15 ranks a set-specific visual
-  description (text + icon, grounded from the physical set actually in use)
-  baked into the prompt, instead of a single generic "what rank is this"
-  ask.
-- `REFERENCE_IMAGES` is the slot for true few-shot reference photos (one
-  clean close-up per rank) — currently empty; populate it (rank + base64 +
-  mimeType per entry) once individual photos are available and every
-  recognition call picks them up automatically, no other code changes
-  needed. `VISION_REFERENCE_MODE` controls how many get attached per call:
-  `none` (cheapest), `grouped` (default — at most one per rank-encoding
-  family, the spec's suggested fallback if attaching all 15 is too
-  expensive/slow), or `full` (one per rank). Every mode is a no-op while
-  `REFERENCE_IMAGES` is empty.
+spec updates "Fix Low Recognition Accuracy" and "Reference Rank Manifest":
+- `RANK_VISUAL_HINTS` gives each of the 15 ranks a confirmed, set-specific
+  visual description baked into the prompt, gathered directly from the
+  physical set in use: every piece has a diagonal banner with the rank name
+  printed in English (except Flag, which has none) plus a rank-specific
+  icon (star count, wheel/gear-with-"I" count, triangle-with-"1" count,
+  chevron, or eyes). `AMBIGUOUS_COUNT_CLUSTERS` calls out the three
+  look-alike clusters that share near-identical banner/icon and differ only
+  by count — the five General ranks (star count), Colonel/Lt. Col/Major
+  (wheel count), and Captain/1st Lt/2nd Lt (triangle count) — and the prompt
+  explicitly asks the model to count carefully and state the count in its
+  `reasoning` for these.
+- Each rank exists in two color variants ("light"/"dark" backgrounds, full
+  color scheme inverted, same text/icon either way) — kept as `light`/`dark`
+  naming per an explicit open question in the spec pending confirmation of
+  whether these map onto different existing team terminology.
+- `REFERENCE_IMAGES` is the slot for true few-shot reference photos (ideally
+  one clean close-up per rank per variant) — currently empty; populate it
+  (rank + variant + base64 + mimeType per entry) once individual photos are
+  available and every recognition call picks them up automatically, no
+  other code changes needed. `VISION_REFERENCE_MODE` controls how many get
+  attached per call: `none` (cheapest), `grouped` (default — at most one per
+  rank-encoding family, the suggested fallback if attaching everything is
+  too expensive/slow), or `full` (every rank/variant on file). Every mode is
+  a no-op while `REFERENCE_IMAGES` is empty.
 - `normalizeImage()` (`imageNormalize.ts`) is a server-side safety net:
   downscales anything over `MAX_UPLOAD_DIMENSION` (longest side, default
   1600px) before it reaches the vision API or disk, independent of whatever

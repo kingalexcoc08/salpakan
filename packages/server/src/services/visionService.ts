@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { ALL_RANKS, RANK_LABELS, Rank } from "@salpakan/shared";
 import { config } from "../config.js";
-import { pickReferenceImages, RANK_VISUAL_HINTS, type ReferenceImageMode } from "./rankReferences.js";
+import { AMBIGUOUS_COUNT_CLUSTERS, pickReferenceImages, RANK_VISUAL_HINTS, type ReferenceImageMode } from "./rankReferences.js";
 
 export interface RecognitionResult {
   rank: Rank;
@@ -15,6 +15,16 @@ export interface VisionService {
 }
 
 const RANK_LIST_FOR_PROMPT = ALL_RANKS.map((r) => `- ${r} ("${RANK_LABELS[r]}"): ${RANK_VISUAL_HINTS[r]}`).join("\n");
+
+// Reference Rank Manifest update: three rank clusters share near-identical
+// banner text/icon shape and differ ONLY by a count — the highest-risk spots
+// for a miscount under glare/tilt/blur. Called out explicitly (on top of the
+// per-rank hints above) so the model treats these counts with extra care.
+const AMBIGUOUS_COUNT_WARNING = [
+  "Pay extra care with counting for these look-alike clusters — each one shares the same banner text or icon shape across multiple ranks and is told apart ONLY by how many stars/wheels/triangles are present:",
+  ...AMBIGUOUS_COUNT_CLUSTERS.map((cluster) => `- ${cluster.description}`),
+  'When your answer is any rank in one of these clusters, make your `reasoning` state the exact count you saw (e.g. "counted 3 wheel emblems").',
+].join("\n");
 
 const RETRY_REMINDER =
   'Your previous response could not be used — it must be ONLY the JSON object below, with "rank" set to exactly one of the 15 RANK_CODE values listed (not a label, not free text). Try again.';
@@ -66,7 +76,10 @@ export class AnthropicVisionService implements VisionService {
     const content: Array<Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam> = [];
 
     for (const ref of pickReferenceImages(this.referenceMode)) {
-      content.push({ type: "text", text: `Reference photo — this is what a ${ref.rank} ("${RANK_LABELS[ref.rank]}") piece looks like on this exact set:` });
+      content.push({
+        type: "text",
+        text: `Reference photo — this is what a ${ref.rank} ("${RANK_LABELS[ref.rank]}", ${ref.variant} variant) piece looks like on this exact set:`,
+      });
       content.push({ type: "image", source: { type: "base64", media_type: ref.mimeType, data: ref.base64 } });
     }
 
@@ -96,13 +109,15 @@ export class AnthropicVisionService implements VisionService {
 function buildPrompt(): string {
   return [
     "You are identifying the rank printed on a single Salpakan (Game of the Generals) game piece from a photo, for this specific physical set.",
-    "Every piece on this set carries BOTH printed English rank text AND a symbolic icon — use whichever is clearer if one is glared, blurred, or tilted.",
+    "Every piece on this set carries a diagonal banner with the rank name printed in English (except the Flag, which has no banner/text) plus a rank-specific icon — use whichever is clearer if one is glared, blurred, or tilted.",
     "Classify it into exactly one of these 15 ranks (respond with the RANK_CODE, not the label). Each entry below describes how that rank looks on this set:",
     RANK_LIST_FOR_PROMPT,
     "",
+    AMBIGUOUS_COUNT_WARNING,
+    "",
     "Respond with ONLY a JSON object, no other text, in this exact shape:",
-    '{"rank": "<RANK_CODE>", "confidence": <number between 0 and 1>, "reasoning": "<short phrase, e.g. \'read text MAJOR\' or \'counted 3 stars\'>"}',
-    "`confidence` should reflect how certain you are overall — lower it for glare, blur, tilt, or ambiguous wear, or if text and icon seem to disagree.",
+    '{"rank": "<RANK_CODE>", "confidence": <number between 0 and 1>, "reasoning": "<short phrase, e.g. \'read banner MAJOR\' or \'counted 3 wheel emblems\'>"}',
+    "`confidence` should reflect how certain you are overall — lower it for glare, blur, tilt, or ambiguous wear, or if banner text and icon seem to disagree.",
   ].join("\n");
 }
 
