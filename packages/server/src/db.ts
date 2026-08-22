@@ -138,4 +138,15 @@ export function openDb(connectionString: string): Pool {
  */
 export async function ensureSchema(db: Queryable): Promise<void> {
   await db.query(SCHEMA);
+
+  // Self-healing cleanup: an early ad-hoc migration on this project's live
+  // database added a CHECK constraint limiting `status` to 'OPEN'/'RESOLVED'
+  // — separate from (and not reflected in) the CREATE TABLE above, so it
+  // silently survived every later schema change. When the ABANDONED status
+  // was introduced, every abandon attempt started failing with a 500 on
+  // production while tests (run against a fresh pg-mem database that never
+  // had this constraint) stayed green. DROP CONSTRAINT IF EXISTS is a
+  // harmless no-op anywhere that never had it (including pg-mem), and fixes
+  // it wherever it lingers.
+  await db.query("ALTER TABLE challenges DROP CONSTRAINT IF EXISTS challenges_status_check");
 }
