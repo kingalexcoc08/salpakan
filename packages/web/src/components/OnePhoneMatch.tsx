@@ -1,6 +1,15 @@
 import type { PlayerColor, Rank } from "@salpakan/shared";
 import { useState } from "react";
-import { confirmSubmission, createChallenge, getChallenge, previewSubmission, reportRejectedRecognition } from "../api.js";
+import {
+  abandonChallenge,
+  ApiError,
+  confirmSubmission,
+  createChallenge,
+  getChallenge,
+  getCurrentChallenge,
+  previewSubmission,
+  reportRejectedRecognition,
+} from "../api.js";
 import { CaptureView } from "./CaptureView.js";
 import { HandoffScreen } from "./HandoffScreen.js";
 import { ResultView } from "./ResultView.js";
@@ -32,22 +41,54 @@ export function OnePhoneMatch({ sessionId, tokens, blueName, redName }: Props) {
   const [initiator, setInitiator] = useState<PlayerColor>("BLUE");
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Recovery for a challenge stuck OPEN (e.g. the app was closed mid-capture) — set when a create attempt fails because one is already open.
+  const [stuckChallengeId, setStuckChallengeId] = useState<string | null>(null);
+  const [abandoning, setAbandoning] = useState(false);
 
   const nameFor = (color: PlayerColor) => (color === "BLUE" ? blueName : redName) || undefined;
+  const anyToken = () => tokens.BLUE ?? tokens.RED!;
 
   async function handleStart() {
     setStarting(true);
     setError(null);
+    setStuckChallengeId(null);
     try {
       // Either token can create the challenge — it's the same device, and
       // creation itself reveals nothing.
-      const token = tokens.BLUE ?? tokens.RED!;
-      const res = await createChallenge(sessionId, token, initiator);
+      const res = await createChallenge(sessionId, anyToken(), initiator);
       setPhase({ step: "HANDOFF_CAPTURE", color: "BLUE", challengeId: res.challengeId });
-    } catch {
-      setError("Could not start a new challenge — check the connection and try again.");
+    } catch (err) {
+      const isAlreadyOpen =
+        err instanceof ApiError && err.status === 409 && (err.body as { error?: string } | null)?.error === "CHALLENGE_ALREADY_OPEN";
+      if (isAlreadyOpen) {
+        setError("A challenge is already open for this match — it may be stuck if a capture was never finished.");
+        try {
+          const current = await getCurrentChallenge(sessionId, anyToken());
+          if (current.status === "OPEN" || current.status === "WAITING_FOR_OPPONENT") {
+            setStuckChallengeId(current.challengeId);
+          }
+        } catch {
+          /* best-effort — the plain error message above still stands */
+        }
+      } else {
+        setError("Could not start a new challenge — check the connection and try again.");
+      }
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function handleAbandonStuck() {
+    if (!stuckChallengeId) return;
+    setAbandoning(true);
+    try {
+      await abandonChallenge(sessionId, anyToken(), stuckChallengeId);
+      setStuckChallengeId(null);
+      setError(null);
+    } catch {
+      setError("Could not abandon the stuck challenge — try again.");
+    } finally {
+      setAbandoning(false);
     }
   }
 
@@ -78,6 +119,11 @@ export function OnePhoneMatch({ sessionId, tokens, blueName, redName }: Props) {
           </div>
         </div>
         {error && <div className="error-banner">{error}</div>}
+        {stuckChallengeId && (
+          <button className="btn btn-secondary" onClick={handleAbandonStuck} disabled={abandoning}>
+            {abandoning ? <span className="spinner" /> : "Abandon the stuck challenge and start fresh"}
+          </button>
+        )}
         <button className="btn btn-primary" onClick={handleStart} disabled={starting}>
           {starting ? <span className="spinner" /> : "New challenge"}
         </button>

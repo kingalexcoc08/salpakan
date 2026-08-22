@@ -1,6 +1,15 @@
 import type { PlayerColor } from "@salpakan/shared";
 import { useState } from "react";
-import { confirmSubmission, createChallenge, getCurrentChallenge, previewSubmission, reportRejectedRecognition, type ChallengeSelfView } from "../api.js";
+import {
+  abandonChallenge,
+  ApiError,
+  confirmSubmission,
+  createChallenge,
+  getCurrentChallenge,
+  previewSubmission,
+  reportRejectedRecognition,
+  type ChallengeSelfView,
+} from "../api.js";
 import { useInterval } from "../useInterval.js";
 import { CaptureView } from "./CaptureView.js";
 import { ResultView } from "./ResultView.js";
@@ -23,6 +32,11 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
   const [challenge, setChallenge] = useState<ChallengeSelfView>({ status: "NONE" });
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Recovery for a challenge stuck OPEN (e.g. an opponent's app crashed
+  // mid-capture) — set when a create attempt fails because one is already
+  // open, so the player isn't just stuck with no way forward.
+  const [stuckChallengeId, setStuckChallengeId] = useState<string | null>(null);
+  const [abandoning, setAbandoning] = useState(false);
 
   useInterval(() => {
     getCurrentChallenge(sessionId, token)
@@ -35,6 +49,7 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
   async function handleStart() {
     setStarting(true);
     setError(null);
+    setStuckChallengeId(null);
     try {
       const res = await createChallenge(sessionId, token, myColor);
       setChallenge({
@@ -45,10 +60,38 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
         yourRank: null,
         yourConfidence: null,
       });
-    } catch {
-      setError("Could not start a new challenge. It may already be your opponent's turn to start one.");
+    } catch (err) {
+      const isAlreadyOpen =
+        err instanceof ApiError && err.status === 409 && (err.body as { error?: string } | null)?.error === "CHALLENGE_ALREADY_OPEN";
+      if (isAlreadyOpen) {
+        setError("A challenge is already open for this match — it may be stuck if nobody's finishing it.");
+        try {
+          const current = await getCurrentChallenge(sessionId, token);
+          if (current.status === "OPEN" || current.status === "WAITING_FOR_OPPONENT") {
+            setStuckChallengeId(current.challengeId);
+          }
+        } catch {
+          /* best-effort — the plain error message above still stands */
+        }
+      } else {
+        setError("Could not start a new challenge. It may already be your opponent's turn to start one.");
+      }
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function handleAbandonStuck() {
+    if (!stuckChallengeId) return;
+    setAbandoning(true);
+    try {
+      await abandonChallenge(sessionId, token, stuckChallengeId);
+      setStuckChallengeId(null);
+      setError(null);
+    } catch {
+      setError("Could not abandon the stuck challenge — try again.");
+    } finally {
+      setAbandoning(false);
     }
   }
 
@@ -58,6 +101,11 @@ export function TwoPhoneMatch({ sessionId, token, myColor }: Props) {
         <h2>Ready for the next challenge</h2>
         <p className="text-dim">When two pieces challenge on the board, either player taps below.</p>
         {error && <div className="error-banner">{error}</div>}
+        {stuckChallengeId && (
+          <button className="btn btn-secondary" onClick={handleAbandonStuck} disabled={abandoning}>
+            {abandoning ? <span className="spinner" /> : "Abandon the stuck challenge and start fresh"}
+          </button>
+        )}
         <button className="btn btn-primary" onClick={handleStart} disabled={starting}>
           {starting ? <span className="spinner" /> : "New challenge"}
         </button>

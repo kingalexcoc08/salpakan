@@ -308,6 +308,63 @@ describe("Recognition confirmation flow", () => {
   });
 });
 
+describe("Abandoning a stuck-open challenge", () => {
+  it("frees the session to create a new challenge and to end the game", async () => {
+    const { sessionId, blueToken } = await createTwoPhoneMatch();
+    const stuckRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const stuckId = stuckRes.body.challengeId;
+
+    // Both blocked while the challenge sits open, nobody having submitted.
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(409)
+      .expect((res) => expect(res.body.error).toBe("CHALLENGE_ALREADY_OPEN"));
+    await request(app).post(`/api/sessions/${sessionId}/end`).set("Authorization", `Bearer ${blueToken}`).expect(409);
+
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${stuckId}/abandon`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .expect(204);
+
+    // Now both work.
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+  });
+
+  it("rejects abandoning a challenge that's already resolved", async () => {
+    const { sessionId, blueToken, redToken } = await createTwoPhoneMatch();
+    const challengeRes = await request(app)
+      .post(`/api/sessions/${sessionId}/challenges`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .send({ initiator: "BLUE" })
+      .expect(201);
+    const challengeId = challengeRes.body.challengeId;
+
+    await submitConfirmed(sessionId, blueToken, challengeId, Rank.Major, 0.95);
+    await submitConfirmed(sessionId, redToken, challengeId, Rank.Captain, 0.9);
+
+    await request(app)
+      .post(`/api/sessions/${sessionId}/challenges/${challengeId}/abandon`)
+      .set("Authorization", `Bearer ${blueToken}`)
+      .expect(409)
+      .expect((res) => expect(res.body.error).toBe("CHALLENGE_ALREADY_RESOLVED"));
+  });
+
+  it("requires auth, same as every other challenge action", async () => {
+    const { sessionId } = await createTwoPhoneMatch();
+    await request(app).post(`/api/sessions/${sessionId}/challenges/some-id/abandon`).expect(401);
+  });
+});
+
 describe("Recognition accuracy feedback (spec §2.5)", () => {
   it("logs a rejected recognition, and backfills the confirmed rank once the player retakes and confirms", async () => {
     const { sessionId, blueToken } = await createTwoPhoneMatch();

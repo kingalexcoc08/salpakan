@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS challenges (
 
 CREATE INDEX IF NOT EXISTS idx_challenges_session ON challenges (session_id, challenge_number);
 
+-- Enforces "only one open challenge per session" (spec §4.2/§4.3's "one
+-- challenge on the board at a time") at the database level, not just in
+-- application code. Without this, two near-simultaneous create-challenge
+-- requests (a double-tap, or both players tapping "New challenge" within
+-- the same moment) could both pass a "SELECT ... WHERE status = 'OPEN'"
+-- check before either INSERT commits, leaving a permanently orphaned
+-- second OPEN row that nobody's client ever submits into — softlocking the
+-- match (can't start a new challenge, can't end the game) since nothing
+-- clears it. A concurrent second INSERT now fails this constraint instead,
+-- and MatchStore.createChallenge() translates that into the same
+-- ChallengeAlreadyOpenError the old application-level check threw.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_one_open_challenge_per_session ON challenges (session_id) WHERE status = 'OPEN';
+
 -- Recognition accuracy feedback (spec update "Fix Low Recognition Accuracy"
 -- §2.5) — a labeled example every time a player rejects a recognized rank
 -- and later confirms a different one for the same piece. Deliberately NOT

@@ -45,6 +45,14 @@ function buildSelfView(row: ChallengeRow, color: PlayerColor) {
     };
   }
 
+  if (row.status === "ABANDONED") {
+    // Never resolved, never chained — operationally identical to "no
+    // challenge here" from a querying player's perspective. Distinguishing
+    // this from OPEN/RESOLVED matters so a direct lookup by id can't
+    // misread it as a genuine result (result_winner/result_type are null).
+    return { status: "NONE" as const };
+  }
+
   let outcome: "WIN" | "LOSE" | "MUTUAL_DESTRUCTION";
   if (row.result_type === "mutualDestruction") {
     outcome = "MUTUAL_DESTRUCTION";
@@ -88,6 +96,30 @@ export function createChallengeRouter(
     } catch (err) {
       if (err instanceof ChallengeAlreadyOpenError) {
         res.status(409).json({ error: "CHALLENGE_ALREADY_OPEN" });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  // Recovery valve for a challenge stuck OPEN with nobody able/willing to
+  // finish it (e.g. a player closed the app mid-capture) — without this,
+  // the match would be permanently stuck: can't start a new challenge
+  // (still "open"), can't end the game (an open challenge blocks that too).
+  // Either color may abandon; only ever affects an OPEN challenge, never a
+  // resolved one already in the hash chain.
+  router.post("/:challengeId/abandon", async (req, res, next) => {
+    try {
+      const auth = getAuth(res);
+      await matchStore.abandonChallenge(auth.sessionId, req.params.challengeId);
+      res.status(204).end();
+    } catch (err) {
+      if (err instanceof ChallengeNotFoundError) {
+        res.status(404).json({ error: "CHALLENGE_NOT_FOUND" });
+        return;
+      }
+      if (err instanceof ChallengeAlreadyResolvedError) {
+        res.status(409).json({ error: "CHALLENGE_ALREADY_RESOLVED", message: "Only an open challenge can be abandoned." });
         return;
       }
       next(err);

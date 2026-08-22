@@ -1,7 +1,8 @@
 import type { CaptureMode, FlagVsFlagRule, PlayerColor } from "@salpakan/shared";
 
 export type SessionStatus = "WAITING_FOR_OPPONENT" | "ACTIVE" | "ENDED";
-export type ChallengeStatus = "OPEN" | "RESOLVED";
+/** ABANDONED = discarded while still OPEN (recovery for a challenge nobody ever finished) — never resolved, never chained. */
+export type ChallengeStatus = "OPEN" | "RESOLVED" | "ABANDONED";
 
 export interface SessionRow {
   id: string;

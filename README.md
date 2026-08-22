@@ -139,8 +139,21 @@ endpoint runs it automatically and reports the result.
   leaves the device it was issued to); in one-phone mode both tokens
   necessarily live on the same device, so the actual secrecy comes from the
   UI's hand-off gating, not the token.
-- **Challenges** — `POST .../challenges` opens one (only one open at a time per
-  session, mirroring one challenge happening on the physical board at a time).
+- **Challenges** — `POST .../challenges` opens one. Only one open at a time per
+  session (mirroring one challenge happening on the physical board at a time)
+  is enforced by a partial unique DB index (`idx_one_open_challenge_per_session`
+  in `db.ts`), not a racy check-then-insert — a genuinely concurrent second
+  create (a double-tap, or both players tapping at once) now fails cleanly
+  with a constraint violation instead of both succeeding and orphaning a
+  second open challenge nobody could ever finish. If a challenge does end up
+  stuck open with nobody able/willing to finish it (e.g. the app closed
+  mid-capture), `POST .../challenges/:id/abandon` clears it — either color
+  may call it, only ever on an OPEN challenge (never one already resolved and
+  chained), and the abandoned row is excluded from history/hash-chain
+  verification entirely. The web UI surfaces this automatically: a "New
+  challenge" attempt that fails because one is already open offers an
+  "Abandon the stuck challenge and start fresh" button.
+
   Submitting a piece is a two-step, player-confirmed flow (recognition
   confirmation update):
   1. `POST .../challenges/:id/submissions/preview` — recognizes the photo and

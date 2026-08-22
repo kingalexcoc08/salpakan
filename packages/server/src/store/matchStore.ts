@@ -37,17 +37,15 @@ export class ChallengeAlreadyOpenError extends Error {}
 export class ChallengeNotFoundError extends Error {}
 export class ChallengeAlreadyResolvedError extends Error {}
 
+/** Postgres error code for a unique-constraint violation (used to detect the "one open challenge per session" index rejecting a concurrent create). */
+function isUniqueViolation(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: string }).code === "23505";
+}
+
 export class MatchStore {
   constructor(private readonly db: Queryable) {}
 
   async createChallenge(sessionId: string, initiator: PlayerColor): Promise<ChallengeRow> {
-    const existingOpen = await this.db.query("SELECT id FROM challenges WHERE session_id = $1 AND status = 'OPEN'", [
-      sessionId,
-    ]);
-    if (existingOpen.rows.length > 0) {
-      throw new ChallengeAlreadyOpenError("A challenge is already open for this session.");
-    }
-
     const countResult = await this.db.query<{ c: number }>(
       "SELECT COUNT(*)::int AS c FROM challenges WHERE session_id = $1",
       [sessionId],
@@ -56,13 +54,46 @@ export class MatchStore {
     const id = generateChallengeId();
     const now = new Date().toISOString();
 
-    await this.db.query(
-      `INSERT INTO challenges (id, session_id, challenge_number, initiator, status, created_at)
-       VALUES ($1, $2, $3, $4, 'OPEN', $5)`,
-      [id, sessionId, challengeNumber, initiator, now],
-    );
+    try {
+      await this.db.query(
+        `INSERT INTO challenges (id, session_id, challenge_number, initiator, status, created_at)
+         VALUES ($1, $2, $3, $4, 'OPEN', $5)`,
+        [id, sessionId, challengeNumber, initiator, now],
+      );
+    } catch (err) {
+      // The DB-level "one open challenge per session" constraint (db.ts)
+      // is what actually enforces this — not a racy check-then-insert — so
+      // a concurrent create loses cleanly with a constraint violation
+      // instead of both succeeding and orphaning a second open challenge.
+      if (isUniqueViolation(err)) {
+        throw new ChallengeAlreadyOpenError("A challenge is already open for this session.");
+      }
+      throw err;
+    }
 
     return (await this.getChallenge(sessionId, id))!;
+  }
+
+  /**
+   * Discards a challenge that's stuck OPEN with nobody able/willing to
+   * finish it (e.g. a player closed the app mid-capture, or an old open
+   * challenge predates this fix) — recovery for exactly the softlock the
+   * missing DB constraint above used to allow: unable to start a new
+   * challenge or end the game because an abandoned one was never cleared.
+   * Only ever touches OPEN challenges; a RESOLVED one (already in the hash
+   * chain) can never be abandoned. The abandoned row is never chained (no
+   * record_hash) and is excluded from history (toMatchRecord requires
+   * status === 'RESOLVED'), so this can't corrupt the match log.
+   */
+  async abandonChallenge(sessionId: string, challengeId: string): Promise<void> {
+    const challenge = await this.getChallenge(sessionId, challengeId);
+    if (!challenge) {
+      throw new ChallengeNotFoundError("No such challenge.");
+    }
+    if (challenge.status !== "OPEN") {
+      throw new ChallengeAlreadyResolvedError("Only an open challenge can be abandoned.");
+    }
+    await this.db.query("UPDATE challenges SET status = 'ABANDONED' WHERE id = $1", [challengeId]);
   }
 
   async getChallenge(sessionId: string, challengeId: string): Promise<ChallengeRow | undefined> {

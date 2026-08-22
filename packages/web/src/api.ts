@@ -120,6 +120,18 @@ export function createChallenge(sessionId: string, token: string, initiator: Pla
   });
 }
 
+/**
+ * Recovery valve for a challenge stuck OPEN with nobody able/willing to
+ * finish it — without this there'd be no way out (can't start a new
+ * challenge, can't end the game) since something was left permanently open.
+ */
+export function abandonChallenge(sessionId: string, token: string, challengeId: string): Promise<void> {
+  return request(`/sessions/${sessionId}/challenges/${challengeId}/abandon`, {
+    method: "POST",
+    headers: authHeaders(token),
+  });
+}
+
 interface ChallengeSelfViewOpenBase {
   challengeId: string;
   challengeNumber: number;
